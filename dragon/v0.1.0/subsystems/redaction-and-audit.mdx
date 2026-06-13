@@ -1,0 +1,101 @@
+---
+title: Redaction and the audit log
+slug: subsystems/redaction-and-audit
+product: DRAGON
+version: v0.1.0
+order: 60
+eyebrow: SUBSYSTEMS
+description: The two-stage secret redaction pipeline and the append-only hash-chained audit log, DRAGON's compliance substrate.
+---
+
+# Redaction and the audit log
+
+Redaction and the audit log are DRAGON's compliance substrate. Redaction proves secrets are scrubbed before any text reaches a model. The audit log proves what the AI did, in a form anyone can verify with only SHA-256. Both are designed to sell to compliance-bound buyers rather than scare them.
+
+## Two-stage redaction
+
+Secrets are scrubbed at two independent stages, both wired by the composition root rather than by the redaction engine itself:
+
+1. Ingestion — everything entering a RAG corpus (documents, device configs, session history) is redacted before it is embedded or stored.
+2. Context assembly — everything about to reach a model, embedded or remote, is redacted again immediately before inference.
+
+The two stages are independent, so a secret that somehow survives one is caught by the other before model contact.
+
+### How redaction runs
+
+The engine applies an ordered, init-time-compiled registry in a fixed sequence:
+
+1. Multiline structural rules first — for example SSH private-key PEM blocks.
+2. Line structural rules in registry order, one pass each.
+3. Line heuristics, such as password echo detection.
+4. The loose high-entropy heuristic, only in strict mode and never on an already-redacted line.
+
+Replacement preserves analytic utility: a match becomes `<REDACTED:rule-id>` rather than a blank, so the model still sees the structure of the line. Cisco type 7 secrets are redacted, never decoded.
+
+### Pattern coverage
+
+Structural rules cover the secrets engineers actually paste, including:
+
+- Cisco type 0, 5, 7, 8, and 9 secrets, `enable secret`, and `enable password`.
+- SNMP communities, TACACS+ keys, RADIUS keys, and neighbor and message-digest keys.
+- IKE and ISAKMP pre-shared keys, crypto key strings, NTP authentication keys, and WPA PSKs.
+- SSH private-key blocks and username secrets.
+
+The high-entropy heuristic catches generic tokens and is enabled only in strict mode.
+
+### Strict mode
+
+A stricter ruleset auto-applies when the inference target is a non-loopback endpoint rather than the embedded local model. The daemon determines this with a loopback check on the configured endpoint and tightens redaction accordingly — remote model traffic is held to a higher bar than local.
+
+### Verification as a release gate
+
+A redaction event records the class and rule, never the secret. The redaction test corpus — real-world config patterns paired with expected redactions — is a dedicated, named CI job. A redaction escape is treated as a release blocker. Beta partners are explicitly invited to submit redaction-escape fixtures, and fixtures are append-only so a fixed escape can never regress.
+
+## The audit log
+
+DRAGON records every AI interaction that matters for accountability in an append-only, hash-chained local log. The chain makes after-the-fact tampering — modification, deletion, reordering, or mid-file truncation — detectable by anyone holding the file. The on-disk format is a public, normative specification; auditors and compliance tooling may build against it directly.
+
+### What is recorded
+
+Every suggestion with its content, classification, and context hash; every acceptance and dismissal; every redaction event; every model and endpoint invocation; and session opens. Payloads are post-redaction by construction — the log never contained secrets.
+
+### Container and schema
+
+The log is UTF-8 JSON Lines, one object per line, `\n` terminated, no BOM, no blank lines, written one file per UTC day as `audit-YYYY-MM-DD.jsonl`. The chain runs continuously across day boundaries. Each entry carries:
+
+| Field | Description |
+|---|---|
+| `seq` | Monotonic sequence, starting at `1`, incrementing by exactly `1`. |
+| `ts` | RFC 3339 UTC timestamp with nanosecond precision. |
+| `kind` | One of `suggestion`, `acceptance`, `dismissal`, `redaction`, `model_call`, `insight`, `session_open`. |
+| `payload` | The audited object as JSON, post-redaction. |
+| `payload_hash` | Lowercase hex SHA-256 of the exact `payload` bytes. |
+| `prev_hash` | The previous entry's `hash`; `64` zeros for genesis. |
+| `hash` | The chain hash of this entry. |
+
+### Hash computation
+
+The chain binds each entry to its predecessor:
+
+```
+payload_hash = hex( SHA-256( payload_bytes ) )
+
+hash = hex( SHA-256( preimage ) )
+
+preimage = seq_decimal || "|" || ts_unixnano_decimal || "|" || kind
+        || "|" || payload_hash || "|" || prev_hash
+```
+
+The separator is a single ASCII pipe. The timestamp enters the preimage as integer Unix nanoseconds, so the chain is independent of RFC 3339 string formatting. The raw payload bytes do not appear in the preimage — they are bound in through `payload_hash`.
+
+### Verification
+
+Given a log file and nothing else, a verifier reads entries in order, rejects non-JSON or gapped `seq`, recomputes each `payload_hash` and `hash`, and checks each `prev_hash` against the prior entry's `hash`. A reference verifier ships with the product as a CLI: it exits non-zero on the first violation, reporting the `seq` and failure class, and prints the terminal hash for checkpointing.
+
+### Honest limits
+
+The chain proves integrity and order, not authorship. An adversary with write access to the machine could regenerate the whole file from scratch. Tail checkpointing — comparing the final `hash` against an externally recorded value to detect truncation from the tail, which a self-contained chain cannot detect — plus OS-level append-only and ACL protections are the mitigations. Signed checkpoints are a roadmap item alongside the formal threat model.
+
+### Export
+
+The native JSONL file is the canonical export; chain verification works on a copy. A flattened CSV export with RFC 4180 quoting is provided for spreadsheet and GRC ingestion, for human review — chain verification is defined only over the JSONL form. Exports are post-redaction by construction.

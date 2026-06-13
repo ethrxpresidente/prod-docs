@@ -1,0 +1,95 @@
+---
+title: Getting started
+slug: getting-started
+product: HALO
+version: v0.1.0
+order: 20
+eyebrow: GET STARTED
+description: Build the OpenMANET packages, install the HALO dashboard on a device, and run the dashboard locally against mock or live ubus data.
+---
+
+# Getting started
+
+HALO is delivered in two parts. The mesh stack is built from the OpenMANET packages feed against an OpenWrt buildroot. The dashboard is a static SPA built with Node.js and deployed to the device. This page covers both, plus running the dashboard locally for development.
+
+## Prerequisites
+
+- An OpenWrt buildroot for your target. The feed layers on top of it; it is not standalone.
+- Supported hardware for a live deployment — a Morse Micro HaLow radio on a BCM271x, Venice, or HaLow Link 2 board.
+- Node.js and `npm` to build the dashboard.
+
+## Install the OpenMANET feed
+
+The feed is an OpenWrt `packages`-style feed and is enabled by default in an OpenMANET buildroot. From the buildroot root, update and install the package definitions.
+
+```bash
+./scripts/feeds update
+./scripts/feeds install -a -p openmanet
+```
+
+Select packages with `make menuconfig`, then build. Mesh packages live under `Network`, `OpenMANET`, `Drivers`, and `Utilities`. The dashboard appears under `Network` as `openmanet-dashboard`.
+
+```bash
+make menuconfig
+make package/openmanet-dashboard/compile V=s
+```
+
+Firmware builds are pinned to a git sha for repeatable output. Pre-built `.ipk` packages install on a running device with `opkg`.
+
+```bash
+opkg install openmanet-dashboard_*.ipk
+```
+
+## Install the dashboard on a device
+
+The dashboard package builds the SPA, copies it to `/www/dashboard/`, and drops a uci-default that adds the `uhttpd` alias. To install a standalone `.ipk` and wire the alias by hand:
+
+```bash
+opkg install openmanet-dashboard_*.ipk
+uci set uhttpd.main.alias='/dashboard=/www/dashboard'
+uci commit uhttpd
+/etc/init.d/uhttpd restart
+```
+
+The dashboard is then reachable at `http://<device-ip>/dashboard`. Authentication uses the device's ubus session — log in with the system credentials, typically `root` and the device password.
+
+## Build the dashboard from source
+
+To produce a device build outside the OpenWrt package flow, build with `VITE_USE_DEVICE=true` so the SPA targets the live `/ubus` endpoint instead of mock data, then copy the output to the device.
+
+```bash
+VITE_USE_DEVICE=true npm run build
+scp -r dist/* root@<device-ip>:/www/dashboard/
+```
+
+Add the alias to `/etc/config/uhttpd` if it is not already present:
+
+```
+option alias '/dashboard=/www/dashboard'
+```
+
+When the SPA is served from `/www/dashboard/`, set `base` to `/dashboard/` in `vite.config.ts` so asset paths resolve correctly.
+
+## Run the dashboard locally
+
+The dashboard runs against deterministic mock data with no device attached. Mock mode is the default and is active whenever `VITE_USE_DEVICE` is unset, covering local development and CI.
+
+```bash
+npm install
+npm run dev
+```
+
+To develop against a real device, set `VITE_USE_DEVICE=true` and point the Vite dev-server proxy at the device IP. The default device address used by the proxy is `192.168.0.230`; override it with `VITE_DEVICE_IP`.
+
+```bash
+VITE_USE_DEVICE=true VITE_DEVICE_IP=10.41.0.1 npm run dev
+```
+
+## First-boot configuration
+
+The dashboard includes a four-step setup wizard at `/setup` for initial device configuration. For day-to-day changes, use the per-section pages described in [the dashboard reference](subsystems/dashboard). For configuration that the dashboard does not yet cover, the sidebar links out to the LuCI interface at `/cgi-bin/luci`.
+
+## Where to go next
+
+- Learn how the pieces fit together in [concepts and architecture](concepts/architecture).
+- Configure the device in [configuration and operations](configuration).

@@ -1,0 +1,73 @@
+---
+title: Licensing and distribution
+slug: licensing
+product: DRAGON
+version: v0.1.0
+order: 90
+eyebrow: LICENSING
+description: DRAGON's offline-capable licensing model, signed installers, the two distribution modes, and the auto-update channel.
+---
+
+# Licensing and distribution
+
+DRAGON is a proprietary commercial product. Its licensing and distribution are designed around one constraint: both must function fully offline, because a meaningful share of DRAGON's market is air-gapped. This page covers the licensing model, the installer set, the two distribution postures, and update delivery.
+
+## License
+
+DRAGON is proprietary, copyright ETHRX LLC, all rights reserved, not for redistribution.
+
+## Offline-capable licensing
+
+Licensing functions with zero network access. License strings are Ed25519-signed and verify locally — the signature check needs no server. A license carries an optional expiry and an optional machine fingerprint:
+
+- A license with no expiry is perpetual.
+- A license with an empty machine fingerprint is floating, not node-locked.
+- A node-locked license whose fingerprint does not match returns a fingerprint-mismatch result that still includes the parsed license, so the UI can offer re-activation rather than failing opaquely.
+
+The activation server signs the identical byte format, so the same license verifies online or off. Two activation paths are intended: online activation for convenience, and an offline request-and-response file exchange for air-gapped sites.
+
+> In `v0.1.0` licensing is a verified scaffold. The Ed25519 verification, signing, and fingerprint logic are implemented and tested, but the daemon does not yet import or enforce them — no feature is gated on a license. Node-locking grace behavior is a roadmap decision.
+
+## Installers
+
+Each release produces signed installers per platform, all of which bundle the Go daemon as a supervised sidecar:
+
+| OS | Installers |
+|---|---|
+| Windows | `.msi` (WiX) and `.exe` (NSIS setup) |
+| macOS | `.dmg` and `.app`, for `aarch64` and `x86_64` |
+| Linux | `.AppImage`, `.deb`, and `.rpm` |
+
+Installers are small — roughly `8` to `11` MB on Windows — because the core is a single static binary, not an Electron bundle. The release pipeline builds the Tauri shell across a CI matrix, cross-compiles and bundles the sidecar into each installer, and publishes a draft release for human review before promotion.
+
+## Two distribution modes
+
+Both postures are first-class and use the same artifacts. Only the delivery differs.
+
+### Connected installs
+
+Standard commercial installs check the update endpoint and self-update through the Tauri updater, verifying each update's detached signature against the public key baked into the application before applying it. This is the convenience path.
+
+### Air-gapped installs
+
+Disconnected and SCIF customers receive the same signed MSI, NSIS, DMG, AppImage, deb, or rpm bundles, move them by sneakernet, and install and upgrade by hand. These installs never contact the update endpoint. This is the provable-offline path that matches DRAGON's promise that data does not leave the room.
+
+## Update signing
+
+The updater signing key is separate from OS code signing and is required: the build emits signed updater artifacts, and the application carries the matching public key to verify them.
+
+> The updater public key is baked into every shipped install, so installs only accept updates signed by the matching private key. If that private key is lost, no future update can ever be accepted by existing installs — they would have to be reinstalled from a new build. The private key must be backed up securely and offline and never committed.
+
+## Auto-update endpoint
+
+The updater is configured against `https://updates.ethrx.io/dragon/{{target}}/{{arch}}/{{current_version}}`, which must serve a Tauri v2 updater JSON manifest carrying the version, notes, publish date, and a per-platform map of signature and download URL.
+
+> The existing update route does not yet serve the Tauri v2 manifest shape, so the auto-updater is not yet end-to-end. This does not block shipping installers or air-gapped customers, who use the offline installer path and never contact the endpoint.
+
+## Code signing status
+
+OS code signing — Windows Authenticode and Apple Developer ID with notarization — is wired into the release pipeline and is a no-op when the certificates are unset, so it can be switched on without a workflow change. Those certificates are not yet procured. Until they are, OS bundles ship unsigned and will trip OS trust prompts such as Windows SmartScreen and macOS Gatekeeper. Federal and SCIF buyers expect signed binaries, so this is a tracked pre-GA item.
+
+## Versioning
+
+DRAGON follows semantic versioning. Pre-1.0 the protocol and on-disk formats are not stable, and breaking changes bump the minor version under the `0.y.z` allowance. The first tagged build is `v0.1.0`, and every tagged release has exactly one matching changelog section with the tag set to `v` plus that version.

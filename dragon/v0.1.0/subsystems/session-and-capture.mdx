@@ -1,0 +1,82 @@
+---
+title: Session broker and structured capture
+slug: subsystems/session-and-capture
+product: DRAGON
+version: v0.1.0
+order: 40
+eyebrow: SUBSYSTEMS
+description: The transport broker for SSH and serial, TOFU host keys, and the capture engine that segments raw output into structured records.
+---
+
+# Session broker and structured capture
+
+The session broker owns every transport. The capture engine turns the raw byte stream it tees into structured records. Together they are the data substrate that makes local AI analysis useful — without good segmentation, a small model has nothing reliable to reason over.
+
+## Session broker
+
+All transport I/O flows through the broker. A transport interface abstracts SSH and serial behind a common byte-stream and control surface — read, write, close, resize, kind, and describe. The describe method never returns credentials.
+
+### SSH transport
+
+SSH uses `golang.org/x/crypto/ssh`. The dial establishes a PTY and interactive shell, sends `keepalive@openssh.com` every `30` seconds, and bounds the connect and handshake with a context. The broker supports password, public-key, agent, and keyboard-interactive authentication in auth order public-key, agent, password, keyboard-interactive.
+
+> In `v0.1.0` the daemon wires only the password path from the wire protocol. The other methods are implemented in the broker but not yet plumbed end to end.
+
+### Serial transport
+
+Serial uses `go.bug.st/serial`. It configures baud, parity, data bits, stop bits, and flow control, and supports the break signal required by some console recovery procedures. Port enumeration lists devices with USB VID and PID and product names, so FTDI, Prolific, and CH340 adapters appear with friendly names. Hot-replug is handled.
+
+### Host-key verification
+
+Host keys use trust-on-first-use against a strict `known_hosts` file. The fingerprint is the OpenSSH SHA-256 form. The policy has three outcomes:
+
+- Unknown host — the broker raises a `hostkey.prompt` to the UI carrying the fingerprint; an accept appends the key to `known_hosts`.
+- Known host, matching key — connect proceeds.
+- Known host, changed key — hard fail as a possible MITM. The unknown-host callback is not consulted.
+
+If no UI is attached to answer a prompt, the dial is rejected. Every verdict — accept, reject, timeout, no-UI — is audit-logged. The prompt has a `60`-second timeout.
+
+### Session lifecycle
+
+The broker manager registers sessions, emits a connected event on open, and emits a disconnected event exactly once on teardown. Reconnect re-dials the stored dial function, swaps the transport, and preserves identity, the capture queue, drop counters, and raw-log continuity. Multiple sessions run concurrently up to the configured cap.
+
+### Raw logging
+
+Each session writes a rotating raw byte log with a maximum size. The log returns offsets so capture records can point back into the exact raw stream. Raw logging is orthogonal to and independent of capture. The raw log is also the source for scrollback when a webview reattaches to a live session after a page reload.
+
+## Structured capture
+
+The capture engine converts the tee'd raw byte stream into structured `SessionEvent` records. It is the hardest and most valuable subsystem. The renderer always receives raw bytes; capture works on its own ANSI-stripped copy.
+
+### The hot path
+
+The engine's feed method is synchronous, allocation-light, and never blocks. Emission goes through a non-blocking callback onto the event bus. A streaming ANSI stripper survives chunk boundaries and feeds line assembly. The engine correlates the user's typed command with the output that follows it, up to the next prompt.
+
+### Prompt and mode detection
+
+Prompts are detected per device profile against the unterminated tail of the stream, so the engine recognizes a prompt before a newline arrives. Mode tracking is a per-profile state machine — for Cisco, exec to enable to config to subconfig, plus ROMMON. Pagination markers such as `--More--` are collapsed so multi-page output forms one coherent record.
+
+### Records and anomalies
+
+Command output is everything between the echoed command and the next prompt. The engine emits a structured record carrying the timestamp, session, device profile, mode, command as typed, ANSI-stripped pagination-collapsed output, and a pointer back into the raw log.
+
+Cheap per-line anomaly patterns — syslog severities, `err-disabled`, CRC counters, OOM and panic strings — emit anomaly-candidate events. These gate ambient AI without invoking the model on every line.
+
+### Resource bounds
+
+The engine bounds untrusted device input so a hostile or malfunctioning device cannot exhaust memory:
+
+- Maximum line length `64` KB. An overflow flushes the line and emits a `capture-line-overflow` anomaly.
+- Maximum command output `16` MB. Further lines are discarded with a truncation marker; input is still consumed so the next prompt finalizes the record.
+
+## Device profiles
+
+Device profiles are declarative TOML bundles — prompt regexes, the mode state machine, pagination markers, and error and anomaly patterns. Profiles are data, not code, and are user-extensible. DRAGON `v0.1.0` ships:
+
+- `cisco-ios`
+- `cisco-nxos`
+- `juniper-junos`
+- `linux-generic`
+- `generic-fallback`
+
+Profiles are embedded in the daemon binary, so the sidecar runs self-contained. Adding a profile is pure data: drop a TOML file alongside the others and register it for the UI picker. The `generic-fallback` profile degrades gracefully to a plain terminal with manual analysis when no specific profile matches.

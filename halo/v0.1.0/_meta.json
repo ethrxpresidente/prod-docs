@@ -1,0 +1,14 @@
+{
+  "label": "HALO v0.1.0",
+  "sections": [
+    "index",
+    "getting-started",
+    "concepts/architecture",
+    "subsystems/mesh-and-routing",
+    "subsystems/dashboard",
+    "subsystems/openmanetd",
+    "subsystems/boards-and-drivers",
+    "subsystems/adsb-to-cot",
+    "configuration"
+  ]
+}

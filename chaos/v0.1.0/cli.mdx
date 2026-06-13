@@ -1,0 +1,118 @@
+---
+title: The chaos CLI
+slug: cli
+product: CHAOS
+version: v0.1.0
+order: 70
+eyebrow: SUBSYSTEMS
+description: The chaos operator CLI — one-shot subcommands, the interactive shell, and the live data-plane monitor.
+---
+
+# The chaos CLI
+
+`chaos` is the operator and service CLI. It talks to `chaosd` over the daemon's Unix socket and is the primary control surface in this release. It has three modes: one-shot subcommands, an interactive shell, and a live monitor. All three drive the same command dispatch path, so behavior is identical across them.
+
+## Global flags
+
+These apply to every subcommand:
+
+- `--socket <path>` — the `chaosd` Unix socket. Defaults to `/run/chaosd/chaosd.sock`; also read from the `CHAOS_SOCKET` environment variable.
+- `--json` — emit machine-readable JSON instead of human-readable text.
+- `--log <level>` — diagnostic log level on stderr (`error`, `warn`, `info`, `debug`, `trace`).
+
+## Subcommands
+
+### system
+
+```bash
+chaos system
+```
+
+Prints the daemon version, the resolved port bindings, and the backend capabilities as tables. With `--json`, prints the raw `GET /v1/system` response.
+
+### impairments
+
+```bash
+chaos impairments get <direction>
+chaos impairments set <direction> [flags]
+chaos impairments clear <direction>
+```
+
+`get` prints the current applied state. `clear` removes all impairments on the direction. `set` applies an impairment, built either from a JSON body or from convenience flags.
+
+Convenience flags for `set`:
+
+- `--latency-ms <ms>` — constant latency, or the mean when `--jitter-ms` is also given.
+- `--jitter-ms <ms>` — jitter; implies stochastic latency and requires `--latency-ms`.
+- `--distribution <uniform|normal|pareto>` — distribution for stochastic latency; requires both latency flags.
+- `--loss-pct <pct>` — Bernoulli loss percentage.
+- `--rate-mbps <mbps>` — rate ceiling in megabits per second.
+
+```bash
+chaos impairments set port1 --latency-ms 40
+chaos impairments set port1 --latency-ms 30 --jitter-ms 5 --distribution pareto
+chaos impairments set port2 --loss-pct 1 --rate-mbps 25
+```
+
+For a full composite, supply a JSON `Impairment` body. `--file -` reads from stdin and is mutually exclusive with the convenience flags:
+
+```bash
+chaos impairments set port1 --file leo-satcom.json
+cat lossy-link.json | chaos impairments set port2 --file -
+```
+
+The flags cover the common one-knob cases; the file path covers everything in [the impairment surface](impairments). `set` refuses an empty impairment — pass `clear` to clear a direction.
+
+### calibration baseline show
+
+```bash
+chaos calibration baseline show
+```
+
+Prints the stored calibration baseline. A `404` from the daemon means no baseline is stored.
+
+## Output and divergence
+
+Human output summarizes the applied impairment per direction. A divergence between requested and applied state is printed as a separate line and colored red on a terminal:
+
+```
+port1:
+  latency: 40.000 ms constant
+  ! divergence: latency-mean requested=40000500 applied=40000000 (kernel-rounded)
+```
+
+With `--json`, the CLI emits the raw `AppliedState` or the RFC 7807 error object, suitable for automation. Output is pipe-safe: a closed reader (for example `| head`) exits quietly rather than failing.
+
+## Interactive shell
+
+```bash
+chaos shell
+```
+
+The shell is a REPL with history, command-tree completion, and inline hints. It parses each line against the same command tree as the one-shot CLI and dispatches through the same path, so commands behave identically. A line is only ever parsed as a CHAOS command — there is no shell escape.
+
+```
+chaos> system
+chaos> impairments set port1 --latency-ms 40
+chaos> impairments get port1
+chaos> monitor
+```
+
+This shell is also the appliance's console login shell on the serial console: console access presents the CHAOS CLI directly, with no incidental system shell, and exit is logout.
+
+## Live monitor
+
+```bash
+chaos monitor
+```
+
+`monitor` is a full-screen dashboard with one column per direction. It reads `GET /v1/system` once, then polls each direction's applied impairment and statistics at roughly 1 Hz. For each port it shows the applied impairment, a throughput sparkline derived from the byte-counter delta over wall time, packets per second, drop count and drop-rate gauge, backlog, and a divergence banner. Press `q` to quit. The monitor is also available as a built-in inside the interactive shell.
+
+## Platform
+
+The CLI argument parser is platform-agnostic, so `--help` works anywhere. Execution requires a Unix host because the client speaks over a Unix domain socket; on other platforms the binary prints a diagnostic and exits non-zero.
+
+## Next steps
+
+- [The HTTP API](api) — the endpoints behind every subcommand.
+- [Calibration](calibration) — the baseline the CLI and API surface.

@@ -1,0 +1,146 @@
+---
+title: The impairment surface
+slug: impairments
+product: CHAOS
+version: v0.1.0
+order: 40
+eyebrow: CONCEPTS
+description: The full set of impairment kinds CHAOS applies per direction — latency, loss, rate, queue, duplication, reordering, corruption — and their wire shapes.
+---
+
+# The impairment surface
+
+An impairment is the complete shaping state of one direction. Every kind is an independent field; set as many as needed and they compose into a single qdisc stack. This page documents each field's wire shape and constraints. All durations are nanoseconds; all percentages are in `[0, 100]`; correlation and probability are in `[0.0, 1.0]`.
+
+## Latency
+
+Latency is constant or stochastic, distinguished by the `kind` tag.
+
+Constant — a fixed one-way delay:
+
+```json
+{ "latency": { "kind": "constant", "duration": 40000000 } }
+```
+
+Stochastic — a mean delay with jitter drawn from a distribution:
+
+```json
+{
+  "latency": {
+    "kind": "stochastic",
+    "mean": 30000000,
+    "jitter": 5000000,
+    "distribution": { "kind": "pareto" },
+    "correlation": 0.25
+  }
+}
+```
+
+`distribution` defaults to `uniform` and `correlation` is optional. A stochastic latency with zero jitter is semantically equivalent to constant and is canonicalized to constant on read-back; the backend emits a warn-level trace event when it observes zero-jitter stochastic configuration. Prefer `constant` for fixed delay.
+
+### Distributions
+
+The `distribution` selects the sampler for stochastic latency:
+
+- `uniform` — the default.
+- `normal` — generated from a built-in inverse-CDF table.
+- `pareto` — generated from a built-in table.
+- `paretonormal` — accepted by the parser but not implemented by the data-plane backend in this release; applying it returns an unsupported error. It is excluded from the advertised capabilities.
+- `table` — a named histogram loaded from a distribution table file. Only the name is on the wire; it must be non-empty, at most 64 characters, and contain only `[a-z0-9_-]`.
+
+Built-in distribution tables are embedded in the binary. Operator-supplied tables are read by name from `/var/lib/chaos/dist/<name>.table`.
+
+## Loss
+
+Loss is Bernoulli or Gilbert-Elliott, distinguished by the `model` tag.
+
+Bernoulli — independent per-packet drop probability:
+
+```json
+{ "loss": { "model": "bernoulli", "pct": 1.0 } }
+```
+
+An optional `correlation` tunes autocorrelation of consecutive draws.
+
+Gilbert-Elliott — a two-state burst model:
+
+```json
+{
+  "loss": {
+    "model": "gilbert-elliott",
+    "p": 0.001,
+    "r": 0.05,
+    "one_minus_h": 0.0,
+    "one_minus_k": 0.9
+  }
+}
+```
+
+`p` is `Pr(Good → Bad)` and `r` is `Pr(Bad → Good)` per packet. `one_minus_h` is the drop probability in the Good state and `one_minus_k` in the Bad state. Gilbert-Elliott is part of the wire shape so consumers are forward-compatible, but the data-plane backend in this release does not implement it; applying it returns an unsupported error and is reported as a divergence.
+
+## Rate
+
+A token-bucket rate ceiling, backed by `tbf`:
+
+```json
+{ "rate": { "bps": 25000000, "burst_bytes": 50000 } }
+```
+
+`bps` is the ceiling in bits per second; `burst_bytes` is the token-bucket burst size, which affects the maximum instantaneous deviation from the ceiling. The CLI `--rate-mbps` flag derives a burst sized at roughly `2 × bps / 1000` bytes, floored at one Ethernet MTU so a single MTU-size packet is never rejected by the shaper. The `tbf` MTU parameter is derived from the bridge port's interface MTU at apply time and is not a configurable field.
+
+## Queue
+
+A bounded queue at the bottom of the stack, backed by `pfifo`. The limit is in packets or bytes:
+
+```json
+{ "queue": { "limit": { "unit": "packets", "value": 1000 } } }
+```
+
+```json
+{ "queue": { "limit": { "unit": "bytes", "value": 64000 } } }
+```
+
+## Duplication, reordering, corruption
+
+Each is a percentage with optional correlation, applied by `netem`.
+
+Duplication — percentage of packets duplicated:
+
+```json
+{ "duplication": { "pct": 0.1 } }
+```
+
+Reordering — percentage reordered, with a required `gap` (a non-zero packet distance):
+
+```json
+{ "reordering": { "pct": 0.5, "gap": 5 } }
+```
+
+Corruption — percentage of packets with a single-bit error introduced:
+
+```json
+{ "corruption": { "pct": 0.001 } }
+```
+
+## Composing impairments
+
+Set multiple fields in one body and they apply together as a single stack:
+
+```json
+{
+  "rate": { "bps": 25000000, "burst_bytes": 50000 },
+  "latency": { "kind": "stochastic", "mean": 30000000, "jitter": 5000000, "distribution": { "kind": "pareto" } },
+  "loss": { "model": "bernoulli", "pct": 0.1 }
+}
+```
+
+This models a LEO satcom link: a 25 Mbps ceiling, 30 ± 5 ms Pareto-distributed delay, and 0.1% loss. Apply it per direction; the two directions are configured independently.
+
+## Capability gating
+
+Before relying on a kind, check the backend capabilities — from `chaos system` or `GET /v1/system`. In this release the data-plane backend supports latency, Bernoulli loss, duplication, reordering, corruption, rate, and queue, with the `uniform`, `normal`, and `pareto` distributions. Gilbert-Elliott loss and the `paretonormal` distribution are on the wire but not yet executed by the backend.
+
+## Next steps
+
+- [Traffic control and the data plane](traffic-control) — how these map to qdiscs.
+- [The HTTP API](api) — the endpoints that accept these bodies.

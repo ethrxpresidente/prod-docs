@@ -1,0 +1,84 @@
+---
+title: Configuration and operations
+slug: configuration
+product: RAIDR
+version: v0.1.0
+order: 90
+eyebrow: OPERATIONS
+description: Environment variables, presets, persistence, and operating the RAIDR server in production.
+---
+
+# Configuration and operations
+
+RAIDR is configured entirely through environment variables. There is no configuration file. This page covers those variables, the data the server persists, the preset catalogs, and operational concerns.
+
+## Environment variables
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `TRNP_BIND` | `127.0.0.1:8787` | Listen address |
+| `TRNP_DB` | `trnp.db` | SQLite database path |
+| `TRNP_FRONTEND` | `frontend/` | Static file root; auto-detected if absent |
+| `TRNP_SRTM_DIR` | unset | Directory of `.hgt` tiles; without it, terrain is `0 m` |
+| `TRNP_GEOID` | unset | EGM96 packed undulation grid; without it, undulation is `0 m` |
+| `RUST_LOG` | `info,trnp_server=debug` | Tracing filter |
+
+Set them in the environment before launching the server.
+
+```bash
+export TRNP_BIND=0.0.0.0:8787
+export TRNP_DB=/var/lib/raidr/raidr.db
+export TRNP_SRTM_DIR=/data/srtm
+export TRNP_GEOID=/data/egm96.bin
+cargo run -p trnp-server --release
+```
+
+> Binding `0.0.0.0` exposes the API on all interfaces. The API has no authentication. Only do this behind an authenticating reverse proxy.
+
+## Persistence
+
+State lives in a single SQLite database, accessed through an sqlx pool with WAL journaling and foreign keys enforced. Migrations run on startup. Three tables hold all persistent state.
+
+- `deployments` — id, name, timestamps, and optional center and region columns.
+- `nodes` — id, deployment reference, name, role, position, height, and the radio and pointing configurations stored as JSON. Deleting a deployment cascades to its nodes.
+- `node_templates` — saved node configurations, with a unique name. Seeded with one built-in template.
+
+Timestamps are stored as RFC 3339 strings. Coverage jobs are not persisted; they live in memory and are evicted ten minutes after completion.
+
+> Back up the SQLite database to preserve deployments, nodes, and templates. With WAL journaling, copy the database together with its `-wal` and `-shm` sidecar files, or checkpoint before copying.
+
+## Presets
+
+Presets are read-only catalogs served under `/api/v1/presets`. They seed new node configurations in the UI and document the supported parameter space.
+
+- Radios — eight presets spanning VHF, UHF, WiFi 2.4 and 5 GHz, LoRa, and point-to-point links.
+- Antennas — nine presets from omnidirectional `2.15–9 dBi` through Yagi `12–16 dBi`, sector, and parabolic dishes `24–32 dBi`.
+- Roles — five presets (command, relay, team, sensor, asset), each with a display color.
+- Modulations — the physics modulation table, BPSK 1/2 through 256QAM 5/6, with bits per symbol and required SNR.
+
+## Templates
+
+Templates are user-defined, persisted node configurations. Create one with `POST /api/v1/templates`, list them with `GET /api/v1/templates`, and remove one with `DELETE /api/v1/templates/:id`. Template names are unique — a duplicate returns `409 Conflict`. One template ships seeded in the database.
+
+## Health and readiness
+
+Two endpoints support orchestration.
+
+```bash
+curl http://127.0.0.1:8787/healthz   # liveness: status, service, version
+curl http://127.0.0.1:8787/readyz    # readiness: db reachable, terrain responds
+```
+
+Use `healthz` as a liveness probe and `readyz` as a readiness probe. `readyz` confirms the database is reachable and the terrain provider responds before reporting ready.
+
+## Logging
+
+Logging uses the `tracing` ecosystem, filtered by `RUST_LOG`. The default `info,trnp_server=debug` gives info-level globally and debug for the server crate. Client errors log at debug, server errors at error level. Request and response tracing is enabled through the HTTP middleware. For JSON logs in a log-aggregation pipeline, the subscriber supports JSON formatting.
+
+## Shutdown
+
+The server installs a graceful shutdown handler for `Ctrl-C` and, on Unix, `SIGTERM`. On signal it stops accepting connections, drains in-flight requests, and exits. Send `SIGTERM` to drain cleanly under an orchestrator.
+
+## Build profile
+
+The release profile is tuned for the deterministic hot path: fat LTO, a single codegen unit, `opt-level = 3`, stripped symbols, and `panic = abort`. Build with `--release` for any real workload — debug builds run the physics routines far slower.

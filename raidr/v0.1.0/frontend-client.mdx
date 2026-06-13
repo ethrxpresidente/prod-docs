@@ -1,0 +1,74 @@
+---
+title: Frontend and WASM client
+slug: frontend-client
+product: RAIDR
+version: v0.1.0
+order: 70
+eyebrow: CLIENT
+description: The Cesium 3D frontend, its visual modes, and the WASM physics bundle that computes link math in the browser.
+---
+
+# Frontend and WASM client
+
+The RAIDR frontend is a vanilla-JavaScript single-page application built on Cesium 1.118, loaded from a CDN with no build step. The server serves it from the same port as the API. A WASM bundle compiled from `trnp-physics` runs link math directly in the browser.
+
+## The Cesium scene
+
+The application renders a 3D globe. Nodes appear as placeable, draggable entities colored by role; links and coverage results are colored by verdict. The scene uses on-demand rendering — it redraws when something changes rather than on a fixed loop — for responsiveness during interaction.
+
+A Cesium Ion token is entered at runtime through a pre-boot modal that works even if the main bundle fails to load. With a token, the scene shows Cesium World Terrain and Bing Aerial imagery. Without one, the application still runs against a default globe.
+
+### Visual modes
+
+A top-bar toggle switches between two modes over the same scene.
+
+- Realistic (default) — Cesium World Terrain, sun lighting, atmosphere, fog, 4× MSAA, and HDR, with Bing Aerial imagery.
+- Tactical — the same scene rendered as monochrome shaded relief: saturation zeroed, brightness reduced, contrast boosted, atmosphere off.
+
+## Module structure
+
+The frontend is plain ES modules with no framework.
+
+| Module | Responsibility |
+|--------|----------------|
+| `main.js` | Boot entrypoint — wires the Ion token modal, initialises the viewer, mounts UI, loads deployments and presets |
+| `api.js` | Typed fetch wrappers over `/api/v1`; the single source of truth for route URLs |
+| `viewer.js` | Cesium scene and entity lifecycle; mutates existing entities rather than recreating them |
+| `ui.js` | DOM for the topbar, drawers, forms, and overlays |
+| `store.js` | A small pub/sub store holding deployments, nodes, links, selection, and modes |
+| `physics-wasm.js` | Lazy loader and facade over the WASM physics bundle |
+| `overlay.js`, `geocode.js` | Selection toolbar and location-to-coordinate lookup |
+
+State lives in a tiny pub/sub store — no framework, no virtual DOM. Views subscribe to keys and re-render on emission. The viewer mutates existing Cesium entities in place to hold interactive frame rates.
+
+## In-browser physics
+
+`physics-wasm.js` lazily imports the WASM bundle from `frontend/wasm/`. The bundle exposes a focused surface so the UI can recompute link math locally as a user drags or edits a node, with no server round-trip on the hot path.
+
+The exposed functions include free-space path loss, Fresnel radius, noise floor, geodesic inverse, modulation selection, and full link analysis — the same `analyze_link` the server runs, compiled to `wasm32`.
+
+### Graceful fallback
+
+The bundle is optional. It is not built by the default server run. When it is absent, the facade falls back to lightweight JavaScript approximations for UI hints and routes full link analysis to the server API. This means the frontend works whether or not you have run the WASM build.
+
+```js
+// physics-wasm.js facade — WASM if present, else fallback
+async fsplDb(distance_m, freq_hz) {
+  const m = await tryLoad();
+  if (m?.fsplDb) return m.fsplDb(distance_m, freq_hz);
+  const lambda = 299_792_458 / freq_hz;
+  return 20 * Math.log10(4 * Math.PI * distance_m / lambda);
+}
+```
+
+To enable native WASM analysis, build the bundle.
+
+```bash
+pwsh scripts/build-wasm.ps1
+```
+
+See [Getting started](getting-started) for build details.
+
+## Heavy compute stays server-side
+
+The browser handles the interactive hot path — recomputing a single link as a node moves. Everything heavier stays on the server: coverage grids, relay planning, mesh routing, and the protocol advisor. The frontend starts those jobs over the API and, for coverage, consumes the SSE stream to paint tiles as they compute.

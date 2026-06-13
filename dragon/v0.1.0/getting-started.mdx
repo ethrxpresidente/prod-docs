@@ -1,0 +1,80 @@
+---
+title: Getting started
+slug: getting-started
+product: DRAGON
+version: v0.1.0
+order: 20
+eyebrow: GET STARTED
+description: Install DRAGON, open SSH and serial sessions, point inference at a model, and add a RAG corpus.
+---
+
+# Getting started
+
+This page covers installing DRAGON, launching it, and running the first sessions. DRAGON is a desktop application: a Tauri v2 shell that supervises the `dragond` daemon as a bundled sidecar and renders the frontend in the OS-native webview.
+
+## Install
+
+Download the installer for your platform from the release artifacts and run it. Per-OS bundles are produced for each release:
+
+| OS | Installers |
+|---|---|
+| Windows | `.msi` (WiX) and `.exe` (NSIS setup) |
+| macOS | `.dmg` and `.app`, for both `aarch64` and `x86_64` |
+| Linux | `.AppImage`, `.deb`, and `.rpm` |
+
+The installer bundles the daemon. There is no separate service to install and no terminal window — the shell spawns and supervises `dragond` automatically. Installers are approximately `8` MB for the NSIS setup, against roughly `150` MB for an equivalent Electron application.
+
+> Air-gapped and SCIF installs use these same signed installers, moved by sneakernet. A disconnected install never contacts the update endpoint. See [licensing and distribution](licensing).
+
+### Connected updates
+
+Connected installs self-update over a signed channel. The updater downloads the new bundle, verifies its detached signature against the public key baked into the application, then applies it. Disconnected installs upgrade by installing a newer signed installer by hand.
+
+## Launch
+
+Start DRAGON from your application launcher. On start the daemon resolves its data directory, creates the `logs/`, `audit/`, and `rag/` subdirectories, loads the embedded device profiles and prompt templates, opens its SQLite store and audit log, and binds the loopback WebSocket on `127.0.0.1:7717`. The frontend connects to `ws://127.0.0.1:7717/ws`.
+
+The daemon binds loopback only and is not routable by design. Its `Host` and `Origin` headers are hardened against DNS-rebinding and cross-origin connections.
+
+## Open an SSH session
+
+Create a session against an SSH host with a device profile. Pick the profile that matches the target — `cisco-ios`, `cisco-nxos`, `juniper-junos`, `linux-generic`, or `generic-fallback` — so structured capture segments output correctly.
+
+The first connection to an unknown host raises a TOFU host-key prompt carrying the OpenSSH SHA-256 fingerprint. Accept to append the key to `known_hosts`; the daemon trusts it on every later connection. A known host presenting a changed key hard-fails as a possible MITM and is not promptable.
+
+> In `v0.1.0` the daemon wires the SSH password authentication path from the wire protocol. Public-key, agent, and keyboard-interactive auth are supported by the broker but not yet plumbed end to end.
+
+## Open a serial session
+
+Enumerate serial ports to populate the picker. DRAGON lists ports with USB friendly names (FTDI, Prolific, CH340). Open a port with the baud, parity, data-bit, stop-bit, and flow settings the console expects. The broker supports the break signal for console recovery procedures.
+
+## Save a session
+
+Save transport parameters, the device profile, and a credential reference into the saved-session tree of folders and entries. Saved passwords are written to the OS keychain; the store keeps only an opaque reference, never the secret. Reopen a saved session to dial it without re-entering parameters.
+
+## Configure inference
+
+DRAGON runs inference in one of two modes:
+
+- Embedded — a bundled `llama.cpp` `llama-server` child process over loopback. This is the offline default and is selected at daemon launch with `-llama-bin` and `-llama-model` pointing at a GGUF model file on disk or USB.
+- Endpoint — any OpenAI-compatible server: LM Studio, Ollama, vLLM, llama-server, or a cloud provider. Set the base URL, model name, embedding model, and API key in settings.
+
+Endpoint mode hot-swaps live from settings — the client, embedder, and redaction strictness reconfigure without a restart. Switching to embedded mode requires a daemon restart with the `-llama-bin` and `-llama-model` flags.
+
+> When the inference endpoint is non-loopback, DRAGON automatically applies strict redaction, which adds a high-entropy token heuristic on top of the structural rules.
+
+## Ask the copilot
+
+With a session open and inference configured, ask the copilot a question about the current session. The orchestrator assembles a context window — recent structured events, the device profile, current mode, and RAG retrieval results — redacts every piece, calls the model, and returns an answer. Malformed model output degrades gracefully to plain text and never produces a staged suggestion.
+
+Staged next-command suggestions land in the staging strip above the input line, each tagged `read-only`, `config-impacting`, or `destructive`. Accept a suggestion to place it in the input line. You send it. DRAGON never transmits it for you.
+
+## Add a RAG corpus
+
+Register a documents or configs source by pointing DRAGON at a directory. The ingestor walks the path (Markdown, TXT, HTML, and PDF for docs), redacts the text, chunks it structurally, embeds it, and stores the vectors. Retrieval is hybrid — vector search fused with BM25 keyword search — and insights cite their sources.
+
+Session history is ingested automatically from completed command records, post-redaction. RAG ingestion is confined to allowed roots; the corpus cannot be pointed at arbitrary host files.
+
+## Review the audit log
+
+Tail the audit log from the audit view. Every suggestion, acceptance, dismissal, redaction event, and model call is recorded in an append-only, hash-chained JSONL log under `audit/`. Export it as JSONL or CSV for compliance ingestion. The format is a public specification — see [redaction and audit](subsystems/redaction-and-audit).

@@ -1,0 +1,75 @@
+---
+title: Traffic control and the data plane
+slug: traffic-control
+product: CHAOS
+version: v0.1.0
+order: 50
+eyebrow: SUBSYSTEMS
+description: How chaosd programs and reads the egress qdisc stack through rtnetlink, the read-back contract, and live statistics.
+---
+
+# Traffic control and the data plane
+
+The data plane is the in-line bridge and the per-port egress qdisc stack that shapes traffic. `chaosd` programs and inspects it through the netlink traffic-control backend. This page covers how the backend operates, what it guarantees, and the statistics it surfaces.
+
+## The backend
+
+The data-plane backend implements a single abstract interface with five operations:
+
+- `apply(direction, impairment)` — program the egress qdisc stack on the direction's port.
+- `clear(direction)` — remove chaos-managed qdiscs from the direction.
+- `read(direction)` — read the current programmed state without modifying it.
+- `read_stats(direction)` — read live cumulative qdisc counters with a sample timestamp.
+- `capabilities()` — report what the backend supports.
+
+On the appliance the backend is `NetlinkTcBackend`, which programs qdiscs through `rtnetlink`. It does not invoke `tc`, `ip`, `bridge`, or `iproute2` at runtime; it speaks netlink directly and requires `CAP_NET_ADMIN`. On non-Linux hosts the crate compiles to a stub whose operations return an unsupported error, so the workspace builds anywhere while only the Linux appliance carries the real path.
+
+## Programming the stack
+
+`apply` builds the egress qdisc stack for the requested impairment and roots it at the lowest configured layer:
+
+- With a rate ceiling: `tbf` at root, `netem` as its child, an optional `pfifo` grandchild for a queue bound.
+- Without a rate ceiling: `netem` at root directly, with an optional `pfifo` child.
+
+No synthetic unlimited `tbf` is ever inserted. A latency-only impairment is a `netem` root with no token-bucket layer, which keeps the added baseline latency low.
+
+Each operation is bounded by a per-operation netlink timeout so a stuck socket or kernel surfaces as an error rather than hanging the daemon.
+
+## The read-back contract
+
+Every `apply`, `clear`, and `read` returns the post-operation kernel state, read back after the write. The backend re-reads the qdisc stack from the kernel and decodes it into an `Impairment`, then compares it against the request to produce the divergence list. This is the structural guarantee that the reported state is what the kernel holds.
+
+Read-back also canonicalizes equivalent forms. The `netem` wire format does not distinguish a constant delay from a stochastic delay with zero jitter; both decode to `Latency::Constant`, which matches their identical behavior at the qdisc layer.
+
+## Clear and foreign state
+
+`clear` removes only the qdiscs CHAOS installed. When it finds a root qdisc that CHAOS did not install and that is not a kernel default, it leaves it in place and reports a `foreign-state` divergence on the `qdisc-root` field. The kernel-default qdiscs treated as already-cleared are `pfifo_fast`, `mq`, `mq_prio`, and `noqueue`. A root qdisc outside that allowlist — including `fq_codel` — surfaces as a divergence so the operator sees a deliberate non-CHAOS configuration rather than having it silently absorbed or removed.
+
+## Live statistics
+
+`read_stats` reads cumulative egress counters from the managed root qdisc's `TCA_STATS2` — `gnet_stats_basic` plus `gnet_stats_queue` — along with monotonic and wall-clock sample timestamps:
+
+| Counter | Meaning |
+|---|---|
+| `tx_bytes` | Total bytes sent through the qdisc |
+| `tx_packets` | Total packets sent through the qdisc |
+| `dropped` | Packets dropped — queue overflow plus impairment loss |
+| `overlimits` | Times the qdisc exceeded its rate ceiling (tbf) |
+| `requeues` | Packets requeued |
+| `backlog_bytes` | Bytes currently enqueued |
+| `backlog_packets` | Packets currently enqueued |
+
+The wire shape carries raw cumulative counters and a sample time, never rates. Consumers compute throughput, packets per second, and drop rate from the delta between two samples. The CLI monitor does exactly this, polling at roughly 1 Hz and rendering derived rates against a ring-buffer history.
+
+## Port bindings
+
+A binding maps a direction to the kernel resources the backend needs: interface name, PCI BDF, and resolved ifindex. `chaosd` resolves the configured interface names to bindings at startup and enforces that `Port1` sorts below `Port2` by BDF, refusing to start on a mismatch. The bindings are constructed once and shared across the daemon.
+
+## Distribution tables
+
+Non-uniform stochastic latency uses a netem delay-distribution table. Built-in tables for `normal` and `pareto` are generated clean-room at build time and embedded in the binary, so one signed artifact carries them. Operator-supplied tables are loaded by name from `/var/lib/chaos/dist/<name>.table`. The built-in Pareto table uses a fixed shape pinned by a golden-bytes test; its right tail is clamped, inherent to netem's table representation.
+
+## Next steps
+
+- [The impairment surface](impairments) — the kinds these qdiscs implement.
+- [The CLI](cli) — `chaos monitor` consumes the statistics described here.

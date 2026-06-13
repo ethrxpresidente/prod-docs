@@ -1,0 +1,77 @@
+---
+title: Configuration and operations
+slug: configuration
+product: CHAOS
+version: v0.1.0
+order: 90
+eyebrow: OPERATIONS
+description: chaosd configuration, filesystem layout, capabilities, logging, and lifecycle on the CHAOS appliance.
+---
+
+# Configuration and operations
+
+This page covers running `chaosd` on the appliance: its configuration file, the filesystem paths it uses, the privileges it needs, and its lifecycle.
+
+## Configuration file
+
+`chaosd` reads `/etc/chaos/chaosd.toml` by default, or a path passed as the first argument. The schema in this release is intentionally small:
+
+```toml
+port1_interface = "enp4s0"          # required — interface bound to Port1 (lower BDF)
+port2_interface = "enp5s0"          # required — interface bound to Port2 (higher BDF)
+
+socket_path   = "/run/chaosd/chaosd.sock"               # optional, default shown
+baseline_path = "/var/lib/chaos/calibration-baseline.json"  # optional, default shown
+```
+
+- `port1_interface` and `port2_interface` are the two transparent-bridge data ports. `Port1` must resolve to the lower PCI BDF; `chaosd` enforces this at startup and refuses to start on a mismatch.
+- `socket_path` is the Unix socket the API is served on.
+- `baseline_path` is the file `GET /v1/calibration/baseline` reads.
+
+Unknown keys are rejected, so a misspelled key fails at startup rather than being ignored. A missing required field fails the same way. There is no hot-reload in this release; restart the daemon to pick up a configuration change.
+
+## Filesystem layout
+
+| Path | Purpose |
+|---|---|
+| `/etc/chaos/chaosd.toml` | Daemon configuration |
+| `/run/chaosd/chaosd.sock` | API Unix socket (default) |
+| `/var/lib/chaos/calibration-baseline.json` | Stored calibration baseline (default) |
+| `/var/lib/chaos/dist/<name>.table` | Operator-supplied distribution tables |
+
+## Privileges
+
+`chaosd` programs qdiscs through `rtnetlink`, which requires `CAP_NET_ADMIN`. On the appliance it runs as a non-root systemd service with that capability granted as an ambient capability — no `sudo`, no `tc`/`ip`/`iproute2` at runtime. When the process lacks the capability, data-plane operations fail and the API returns `403`.
+
+## Startup sequence
+
+On start, `chaosd`:
+
+1. Initializes structured logging.
+2. Loads the configuration file.
+3. Resolves the two interface names to port bindings and enforces the `Port1` < `Port2` BDF convention, refusing to start on a mismatch.
+4. Snapshots the port identity reported by `GET /v1/system`.
+5. Opens the netlink backend.
+6. Installs `SIGTERM` and `SIGINT` handlers.
+7. Serves the API on the configured socket until a shutdown signal.
+
+On shutdown it stops serving, closes the backend cleanly, and unlinks the socket so the next start binds cleanly.
+
+## Logging
+
+`chaosd` logs structured events through `tracing`. It prefers the systemd journal when available — the appliance case — and falls back to a plain formatted layer on dev hosts without journald. The log filter is read from the environment, defaulting to `info`.
+
+The API layer emits a per-request span carrying method, URI, status, and latency. Data-plane operations log at the appropriate level, including the warn-level event emitted when a zero-jitter stochastic latency is observed.
+
+## The CLI on the appliance
+
+The `chaos` CLI connects to the same socket. Set `CHAOS_SOCKET` or pass `--socket` if the daemon is configured with a non-default socket path. The CLI is also the serial-console login shell: console access presents the CHAOS command surface directly with no system shell.
+
+## Transport and security posture
+
+In this release the API is served only over the Unix domain socket. There is no TCP listener, no TLS, and no authentication on this surface; access is mediated by filesystem permissions on the socket. Network-facing transport, TLS, and authentication are roadmap items. See [roadmap and lifecycle](roadmap).
+
+## Next steps
+
+- [Getting started](getting-started) — configure and run end to end.
+- [Roadmap and lifecycle](roadmap) — what is planned beyond this release.

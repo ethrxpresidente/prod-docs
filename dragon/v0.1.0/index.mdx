@@ -1,0 +1,55 @@
+---
+title: DRAGON overview
+slug: index
+product: DRAGON
+version: v0.1.0
+order: 10
+eyebrow: OVERVIEW
+description: DRAGON is an AI-augmented SSH and serial terminal with a local inference, redaction, and audit layer in the session path.
+---
+
+# DRAGON overview
+
+DRAGON is an AI-augmented terminal for network and infrastructure engineers. It speaks SSH and serial console, and it places an intelligence layer directly in the session path: structured capture of device I/O, locally-hosted AI analysis, staged command suggestions, and retrieval-grounded troubleshooting. The name is a backronym — diagnostic retrieval-augmented generation for operational networks.
+
+DRAGON is built for environments where session data cannot leave the room. Inference, embeddings, the vector store, and licensing all function with zero internet access. The product is deployable in SCIFs, on the tactical edge, and across OT and ICS networks.
+
+> DRAGON `v0.1.0` is the first tagged build. It is a pre-1.0 release; the wire protocol and on-disk formats are not yet stable. See the changelog for what shipped.
+
+## What DRAGON does
+
+DRAGON owns every transport. Keystrokes and device output flow through a session broker that tees the byte stream: one copy renders to the terminal synchronously and losslessly, the other feeds a structured capture engine. The render path is never blocked by capture, redaction, or inference — the terminal feels native even with AI disabled.
+
+The capture engine segments raw terminal output into structured `(prompt, command, output)` records using device-aware profiles. Those records are the data substrate that makes local AI analysis useful. An inference orchestrator consumes them to surface anomalies, answer questions, and stage next-command suggestions.
+
+Suggested commands are never auto-executed. Acceptance places a command in the input line for the operator to send. No setting overrides this. It is a product invariant.
+
+## Who it is for
+
+DRAGON targets three operator profiles:
+
+- Network engineers and NOC operators working Cisco, Juniper, and Arista CLI daily, on serial console regularly, against vendor PDFs and tribal-knowledge runbooks.
+- Federal and defense field engineers in disconnected environments with classification constraints and accountability requirements.
+- Sysadmins and SREs doing SSH-heavy Linux work and incident response who want log and stack-trace explanation inline.
+
+## Core capabilities
+
+- SSH and serial console transports through a single session broker, with TOFU host-key verification, saved-session trees, and per-session raw logging.
+- Structured capture with declarative device profiles for `cisco-ios`, `cisco-nxos`, `juniper-junos`, `linux-generic`, and a `generic-fallback`.
+- Two-stage secret redaction — at RAG ingestion and again at context assembly — before any text reaches a model.
+- Hybrid RAG over user-pointed document corpora, device configs, and auto-ingested session history.
+- Inference anywhere: an embedded `llama.cpp` runtime by default, or any OpenAI-compatible endpoint.
+- An append-only, hash-chained audit log of every suggestion, disposition, redaction event, and model call.
+
+## How DRAGON is delivered
+
+DRAGON ships as a desktop application. A thin Tauri v2 shell opens a window, loads the frontend in the OS-native webview, and supervises a Go daemon (`dragond`) as a bundled sidecar. The frontend and daemon communicate over a single loopback WebSocket on `ws://127.0.0.1:7717/ws`. The daemon is a single static binary with device profiles and prompt templates embedded, so it runs self-contained from any working directory.
+
+Installers are produced for Windows, macOS (arm64 and x86_64), and Linux. Connected installs auto-update over a signed channel; air-gapped installs use the same signed installers moved by sneakernet.
+
+## Where to go next
+
+- Install and run DRAGON in [getting started](getting-started).
+- Understand the topology in [concepts and architecture](concepts/architecture).
+- Read the subsystem references for [session and capture](subsystems/session-and-capture), [copilot and RAG](subsystems/copilot-and-rag), and [redaction and audit](subsystems/redaction-and-audit).
+- Review the [security and compliance posture](security) and the [licensing and distribution](licensing) model.

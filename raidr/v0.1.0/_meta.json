@@ -1,0 +1,14 @@
+{
+  "label": "RAIDR v0.1.0",
+  "sections": [
+    "overview",
+    "getting-started",
+    "concepts",
+    "physics-engine",
+    "geo-and-terrain",
+    "server-api",
+    "frontend-client",
+    "llm-integration",
+    "configuration"
+  ]
+}

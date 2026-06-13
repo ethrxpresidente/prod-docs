@@ -1,0 +1,75 @@
+---
+title: Security and compliance posture
+slug: security
+product: DRAGON
+version: v0.1.0
+order: 80
+eyebrow: SECURITY
+description: DRAGON's offline-first security posture — no telemetry, two-stage redaction, auditable AI, keychain credentials, and daemon hardening.
+---
+
+# Security and compliance posture
+
+DRAGON is built for environments where session data cannot leave the room: SCIFs, the tactical edge, OT and ICS networks, and classified and air-gapped facilities. The security posture follows from that constraint. This page is the customer-facing statement; the mechanisms behind it are documented in the subsystem references.
+
+> The formal threat model is a roadmap deliverable. Until it lands, this page is a posture statement, not an assurance argument. Known gaps are stated plainly below.
+
+## No telemetry
+
+DRAGON sends no telemetry by default — no usage analytics, no crash reports, no phone-home. Any future telemetry will be opt-in, documented in full, and forcibly disabled in offline mode.
+
+## Offline mode as a provable claim
+
+In offline operation DRAGON makes zero outbound network connections except the device transports the operator explicitly opens. Inference runs on the embedded `llama-server` child process over loopback, embeddings and the vector store are local, and licensing operates on signed license files with an offline activation path and no entitlement callbacks. This is a testable claim, not a marketing one.
+
+Air-gapped installs update by installing newer signed installers by hand. They never contact the update endpoint.
+
+## Two-stage redaction before any model contact
+
+Secrets are scrubbed at two independent stages — at RAG ingestion before text is embedded, and at context assembly before any model call. Coverage spans Cisco type 0, 5, 7, 8, and 9 secrets, `enable secret`, SNMP communities, TACACS+ and RADIUS keys, IKE PSKs, SSH private-key blocks, password echoes, and a high-entropy heuristic; type 7 is redacted, never decoded. Replacements preserve analytic utility, and every redaction event is logged by class, location, and time, never the secret itself.
+
+A stricter ruleset auto-applies when the inference target is a remote endpoint. The redaction test corpus is its own named CI job, and a redaction escape is a release blocker. See [redaction and the audit log](subsystems/redaction-and-audit).
+
+## Auditable AI
+
+Every suggestion, acceptance, dismissal, redaction event, and model invocation is recorded in an append-only, hash-chained audit log. The format is a public artifact, so customers verify and ingest it with their own tooling using only SHA-256.
+
+Suggested commands are never auto-executed. Acceptance places a command in the input line for the operator to send. No setting overrides this. It is a product invariant.
+
+## Credentials
+
+Credentials are stored exclusively in the OS keychain — Windows DPAPI, macOS Keychain, or Linux Secret Service — never plaintext on disk. The application store keeps only an opaque keychain reference. The wire protocol reports credential presence but never returns a stored secret, and audit payloads carry presence flags, never key material.
+
+## Local daemon hardening
+
+The core runs as a loopback-bound WebSocket daemon. Because loopback binding alone does not stop a malicious web page via DNS rebinding, the daemon adds layered defenses:
+
+- A loopback-literal `Host` header requirement and an `Origin` allow-list, defeating DNS-rebinding and cross-origin drive-by connections.
+- A concurrent-session cap and per-connection rate limiting on expensive operations, a resource-exhaustion defense.
+- RAG ingestion confined to explicitly allowed, symlink-resolved roots, a path-traversal defense.
+- Bounded buffers on all untrusted input — capture line and output size, PDF extraction time — so a hostile or malfunctioning device cannot exhaust memory. Dropped internal events are counted and logged, never silent.
+
+These controls were added in response to an internal multi-agent security audit; its findings — one critical, six high, six medium, five low — were all remediated, and each redaction-pattern fix is CI-regression-gated.
+
+## Host-key trust
+
+SSH host keys use trust-on-first-use against a strict `known_hosts`. An unknown host prompts the UI with the SHA-256 fingerprint and a `60`-second timeout; a known host presenting a changed key hard-fails as a possible MITM and is not promptable; with no UI to answer, the dial is rejected. Every verdict is audit-logged.
+
+## Supply chain and distribution
+
+Code signing is wired for all platforms, SBOM generation runs in CI, and dependency vulnerability gates run on every build — `govulncheck` for the Go core and an npm audit posture for the frontend and services. The core is CGO-free, so cross-compilation needs no per-target C toolchain.
+
+## Known gaps, stated honestly
+
+DRAGON `v0.1.0` is pre-1.0, and the posture is documented with its gaps visible:
+
+- The per-launch connection token referenced in earlier design notes is not implemented. The only connection authentication is the `Host` and `Origin` checks. Migrating loopback TCP to an OS pipe is a tracked hardening item.
+- The IPC is still loopback TCP, not the planned OS named pipe or Unix domain socket.
+- The formal threat model is pending. Assets in scope: credentials, session data, RAG corpora, license keys. Adversaries in scope: endpoint malware, insider exfiltration via remote AI endpoints, supply-chain compromise.
+- FIPS-validated crypto is tracked as a roadmap item for federal procurements that require it; it is not in `v0.1.0`.
+- Audit-log tail-checkpoint signing is a roadmap item; the chain proves integrity and order, not authorship.
+- OS code-signing certificates are not yet procured; until then OS bundles ship unsigned and will trip OS trust prompts. The updater signing key is separate and required.
+
+## Reporting
+
+Send security reports to `security@ethrx.io`. Beta partners are encouraged to submit redaction-escape fixtures.

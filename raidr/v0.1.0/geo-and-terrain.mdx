@@ -1,0 +1,69 @@
+---
+title: Geo and terrain
+slug: geo-and-terrain
+product: RAIDR
+version: v0.1.0
+order: 50
+eyebrow: SUBSYSTEMS
+description: WGS84 geodesy, Vincenty geodesics, the EGM96 geoid, and the SRTM elevation provider that feed RAIDR terrain profiles.
+---
+
+# Geo and terrain
+
+Two crates supply the spatial foundation. `trnp-geo` provides WGS84 geodesy and the EGM96 geoid. `trnp-terrain` provides SRTM elevation and geodesic profile sampling. Together they turn two coordinates into the terrain profile the physics engine analyses.
+
+## Geodesy
+
+### WGS84 ellipsoid
+
+The reference ellipsoid uses the NIMA TR8350.2 WGS84 parameters: semi-major axis `a = 6378137 m` and flattening `f = 1/298.257223563`. Derived quantities — semi-minor axis, first and second eccentricity squared — are computed from those two at construction.
+
+### Vincenty geodesics
+
+The `Geodesic` type solves the inverse and direct geodesic problems with the Vincenty 1975 formulae on the ellipsoid.
+
+- The inverse problem returns geodesic distance, forward azimuth, reverse azimuth, and a convergence flag. It iterates to a tolerance of `1e-12` over up to 200 iterations, achieving sub-millimetre accuracy over distances up to `20000 km`.
+- The direct problem projects a destination from a start point, azimuth, and distance.
+- Near-antipodal pairs that fail to converge fall back to a great-circle estimate and report `converged: false`.
+
+Sampling a path returns evenly spaced points along the geodesic, with the first and last forced to the exact endpoints. This is the basis for terrain profile sampling.
+
+### ECEF and ENU
+
+A geodetic position converts to Earth-centred Earth-fixed (ECEF) Cartesian coordinates and back. The inverse uses Bowring's method, converging to sub-millimetre accuracy within three iterations at terrestrial heights. Local east-north-up (ENU) transforms rotate an ECEF displacement into a local tangent frame about an origin.
+
+## Geoid
+
+RAIDR distinguishes two vertical datums and reconciles them through the geoid.
+
+- HAE — height above the WGS84 ellipsoid. The physics engine works in HAE because diffraction geometry is referenced to the ellipsoid.
+- MSL — orthometric height above mean sea level. SRTM elevation samples are MSL.
+
+The relationship is `HAE = MSL + N`, where `N` is the geoid undulation. The EGM96 provider reads a packed undulation grid and bilinearly interpolates `N` at any coordinate.
+
+### EGM96 grid format
+
+The packed grid begins with an 8-byte header `EGM96\x0F\x00\x00`, followed by `nlat` and `nlon` as little-endian `u16`, four reserved bytes, then `nlat × nlon` little-endian `f32` undulation values in row-major order. Rows run north to south, columns west to east. The standard 15-arc-minute grid is `721 × 1441`, with the final column wrapping `360°` back to `0°`. Global accuracy is roughly `0.5 m`, below the SRTM vertical noise floor.
+
+> Without a geoid grid configured, RAIDR uses a zero-undulation stub: `N = 0` everywhere, and SRTM MSL heights are used directly as HAE. For relative terrain geometry this is acceptable; for absolute vertical accuracy, supply the grid via `TRNP_GEOID`.
+
+## Terrain
+
+### SRTM provider
+
+The terrain provider reads NASA SRTM `.hgt` tiles. Each file is named by its south-west corner — `N40W075.hgt` covers `40–41°N`, `74–75°W`. Samples are signed 16-bit big-endian metres MSL in row-major north-to-south order. Both resolutions are supported: 1 arc-second tiles are `3601 × 3601`, 3 arc-second tiles are `1201 × 1201`. The void marker is `−32768`.
+
+Tiles are memory-mapped on first query and cached by their south-west corner key. A missing tile is remembered as absent so repeated lookups do not retry the filesystem. Elevation queries bilinearly interpolate the four surrounding samples; if any corner is void, the query returns no value.
+
+### Geodesic profile sampling
+
+Profile sampling ties the subsystems together. Given two endpoints with antenna heights in MSL and a sample count, it:
+
+1. Solves the inverse geodesic for distance and azimuth.
+2. Walks the geodesic at evenly spaced distances, projecting each intermediate point with the direct solver and forcing exact endpoints.
+3. Queries terrain MSL elevation and geoid undulation at each point.
+4. Converts each sample to HAE as `MSL + N` and records its cumulative distance.
+
+Endpoints carry the supplied antenna heights rather than terrain elevation. Where terrain is void or out of coverage, intermediate samples fall back to `0 m` MSL rather than NaN, keeping the diffraction model well-defined.
+
+> With no SRTM directory configured, the provider returns `0 m` everywhere. Links still compute, but over a flat sea-level earth. Configure `TRNP_SRTM_DIR` for real terrain.

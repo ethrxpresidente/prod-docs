@@ -1,0 +1,50 @@
+---
+title: HALO overview
+slug: index
+product: HALO
+version: v0.1.0
+order: 10
+eyebrow: OVERVIEW
+description: HALO is the OpenMANET dashboard and package feed for 802.11ah HaLow mesh nodes running OpenWrt with batman-adv routing.
+---
+
+# HALO overview
+
+HALO is the operations layer for OpenMANET mesh networking devices. It pairs a modern web dashboard with the OpenWrt package feed that builds the mesh stack — the HaLow radio driver, batman-adv routing, the `alfred` data-exchange daemon, the `openmanetd` manager, and board support for the supported hardware. Together these produce a self-forming, multi-hop wireless mesh that an operator can monitor and configure from a browser.
+
+The dashboard is a static single-page application served by `uhttpd` directly on the device. It talks to OpenWrt over the `ubus` JSON-RPC interface and renders live system, radio, network, and mesh telemetry. It is built to replace the legacy LuCI interface for day-to-day operation while leaving LuCI reachable for advanced configuration.
+
+> HALO `v0.1.0` is an early release. The dashboard ships as `openmanet-dashboard` `0.1.0`. Backend integration points are still being wired against real devices — treat on-disk formats and ubus surface as subject to change.
+
+## What HALO is
+
+HALO has two halves that ship from the same repository.
+
+The OpenMANET packages feed is an OpenWrt `packages`-style feed. It is layered on top of an OpenWrt buildroot and contributes the build scripts, options, and patches for the mesh applications and kernel modules used by OpenMANET. Packages are installed with `opkg` on a running device or selected into a firmware image with the OpenWrt SDK.
+
+The dashboard is a React 18 + TypeScript SPA built with Vite. It is packaged as `openmanet-dashboard` and installed into `/www/dashboard/` on the device, served by `uhttpd` alongside LuCI.
+
+## Who it is for
+
+HALO targets operators of tactical and field wireless mesh networks built on 802.11ah HaLow radios. The reference hardware is a Morse Micro MM6108-class radio paired with a Raspberry Pi BCM2711, a Gateworks Venice board, or a Morse Micro HaLow Link 2. Operators monitor node health, mesh topology, and radio state, and perform first-line configuration without dropping into the full OpenWrt CLI.
+
+## Core capabilities
+
+- A web dashboard for system, network, wireless, security, and diagnostics, served on-device and backed by `ubus`.
+- 802.11s HaLow mesh on Morse Micro radios, with `mesh11sd` for dynamic mesh parameter configuration.
+- Layer-2 multi-hop routing with `batman-adv` (BATMAN_V), monitored through originator and neighbor tables.
+- Decentralized mesh data exchange — hostnames, gateway, node, and position records — over `alfred`.
+- `openmanetd`, the OpenMANET manager, including GNSS handling and a multicast push-to-talk voice path.
+- ADS-B to Cursor-on-Target forwarding for feeding aircraft tracks into a TAK mesh.
+- Board support packages for BCM271x, Venice, and HaLow Link 2 hardware, plus the Morse Micro HaLow driver.
+
+## How HALO is delivered
+
+The mesh stack is delivered as OpenWrt packages built from the feed and either flashed into firmware or installed with `opkg`. The dashboard is built with `npm run build` and deployed to `/www/dashboard/`, with a `uhttpd` alias exposing it at `/dashboard`. Both paths are described in [getting started](getting-started).
+
+## Where to go next
+
+- Install and run HALO in [getting started](getting-started).
+- Understand the topology in [concepts and architecture](concepts/architecture).
+- Read the subsystem references for [mesh and routing](subsystems/mesh-and-routing), the [dashboard](subsystems/dashboard), [openmanetd](subsystems/openmanetd), [boards and drivers](subsystems/boards-and-drivers), and [ADS-B to CoT](subsystems/adsb-to-cot).
+- Review device [configuration and operations](configuration).

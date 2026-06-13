@@ -1,0 +1,89 @@
+---
+title: The dashboard
+slug: subsystems/dashboard
+product: HALO
+version: v0.1.0
+order: 50
+eyebrow: SUBSYSTEMS
+description: The HALO web dashboard — a React SPA served by uhttpd that renders live device telemetry over the ubus JSON-RPC interface.
+---
+
+# The dashboard
+
+The HALO dashboard is a static single-page application that runs in the browser and talks to OpenWrt over `ubus`. It is built with React 18, TypeScript, Vite, Tailwind CSS, Framer Motion, and React Router v6, and is packaged as `openmanet-dashboard` `0.1.0`. It is served on-device by `uhttpd` from `/www/dashboard/`.
+
+## Layout and navigation
+
+The dashboard renders a fixed sidebar plus a content area. The sidebar carries the brand header, primary navigation, and a footer link to LuCI for advanced configuration. Navigation is client-side through React Router — no page reloads.
+
+| Page | Path | Purpose |
+|------|------|---------|
+| Dashboard | `/` | System overview, radio, network, and mesh status |
+| Network | `/network` | Interface list and DHCP leases |
+| Wireless | `/wireless` | HaLow radio config and associated-client table |
+| Security | `/security` | Firewall zones and encryption |
+| Diagnostics | `/diagnostics` | System gauges and a ping tool |
+| Settings | `/settings` | Hostname, timezone, and maintenance actions |
+| Setup wizard | `/setup` | Four-step initial device configuration |
+
+All routes require authentication. The `Advanced Config` link opens `/cgi-bin/luci` in a new tab.
+
+## Pages
+
+### Dashboard
+
+The overview page renders CPU load, memory, uptime, radio state, network interfaces, and mesh status. It is the landing page after login and is intended to visualize the BATMAN_V originator and neighbor data as a topology view.
+
+### Network
+
+Lists network interfaces with their addresses, protocols, and routes, plus active DHCP leases. Interfaces are read from `network.interface.dump`; leases from `dhcp.leases`.
+
+### Wireless
+
+Shows HaLow radio configuration — SSID, channel, frequency, bandwidth, txpower, and encryption — alongside a table of associated clients with per-client signal and rate. Radio info comes from `iwinfo.info`; clients from `iwinfo.assoclist`.
+
+### Security
+
+Renders firewall zones and inter-zone forwarding rules from `firewall.zones` and `firewall.forwardings`, plus the radio's encryption posture.
+
+### Diagnostics
+
+Presents system-health gauges and a ping tool.
+
+### Settings
+
+Exposes hostname and timezone, plus maintenance actions — backup and restore, and reboot.
+
+### Setup wizard
+
+A four-step wizard for initial device configuration, reached at `/setup`.
+
+## The ubus client
+
+The SPA reaches the device through a single typed client in `src/lib/ubus.ts`. It is the sole interface between the frontend and OpenWrt. `ubusCall(path, method, params)` issues a JSON-RPC 2.0 `call` to `/ubus` carrying the session ID. Typed convenience wrappers in the `ubus` namespace cover the device objects the dashboard consumes, and React hooks in `src/hooks/useUbus.ts` wrap each call with loading state, error handling, and polling.
+
+Polling intervals are tuned for embedded performance:
+
+- System info — `5s`.
+- Network interfaces and BATMAN mesh — `10s`.
+- DHCP leases — `15s`.
+- Static data such as board info, wireless info, and firewall config — fetched once on mount.
+
+Initial fetches show a loading state; subsequent polls update data silently.
+
+## Authentication
+
+The dashboard authenticates against the device's ubus session API. `ubusLogin(username, password)` calls `session login`; the returned `ubus_rpc_session` ID is stored and attached to every subsequent call. The unauthenticated null session is `00000000000000000000000000000000`. In mock mode, login returns a placeholder session immediately.
+
+## Design system
+
+Colors are HSL CSS variables defined in `index.css`. Primary is amber (38°); success is green (142°); destructive is red (0°); informational is blue (199°). Fonts are Inter for UI and JetBrains Mono for data and metrics.
+
+## Utilities
+
+The client ships helpers that normalize raw device values. OpenWrt reports load scaled by `65536`, so `loadToPercent` converts to a percentage where `65536` equals 100% of one core. `formatBytes`, `formatUptime`, `formatFrequency`, and `formatEncryption` produce the human-readable strings the UI displays.
+
+## Where to go next
+
+- [Concepts and architecture](concepts/architecture) covers the full ubus data flow.
+- [Configuration and operations](configuration) covers what the dashboard changes on the device.

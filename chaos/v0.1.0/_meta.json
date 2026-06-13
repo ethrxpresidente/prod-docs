@@ -1,0 +1,15 @@
+{
+  "label": "CHAOS v0.1.0",
+  "sections": [
+    "overview",
+    "getting-started",
+    "concepts",
+    "impairments",
+    "traffic-control",
+    "api",
+    "cli",
+    "calibration",
+    "configuration",
+    "roadmap"
+  ]
+}

@@ -1,0 +1,86 @@
+---
+title: Configuration
+slug: configuration
+product: DRAGON
+version: v0.1.0
+order: 70
+eyebrow: CONFIGURE
+description: Daemon launch flags, persisted settings, the data directory layout, and how flags and settings interact.
+---
+
+# Configuration
+
+DRAGON is configured two ways: launch flags passed to the daemon at start, and persisted settings updated live over the wire. Flags shadow persisted settings per-field for the duration of a run and never write the store. This page covers both, the data directory, and how the layers combine.
+
+## Daemon launch flags
+
+The shell launches `dragond` for you, but the daemon accepts flags directly when run from a CLI or supervised. Key flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `-addr` | `127.0.0.1:7717` | The loopback bind address. There is no routable bind by design. |
+| `-data` | OS user config dir `/dragon` | The single user-data directory. |
+| `-max-sessions` | `64` | Concurrent live-session cap; each session pins a transport. |
+| `-exit-with-parent` | off | Shut the daemon down when the parent's held stdin pipe breaks. The shell sets this. |
+| `-llama-bin` | unset | Path to the `llama-server` binary for embedded inference. |
+| `-llama-model` | unset | Path to the GGUF model file for embedded inference. |
+| `-rag-roots` | home and data-dir parent | Allowed roots for RAG ingestion; ingestion is confined to these. |
+| `-profiles` | embedded | Override the embedded device profiles with a directory. |
+| `-prompts` | embedded | Override the embedded prompt templates with a directory. |
+
+Flags shadow persisted settings per-field for the run only. They never mutate the store, so a flag override is non-destructive and reverts on the next normal launch.
+
+> `-exit-with-parent` is off by default so a CLI launch, where stdin may already be closed, is unaffected. The shell always sets it so a shell crash does not orphan the daemon.
+
+## Persisted settings
+
+Settings are fetched and updated live over the wire and stored as key-value JSON in `dragon.db`. A settings update is a partial update applied immediately. Configurable fields:
+
+- `ai.mode` — `embedded` or `endpoint`.
+- `ai.endpoint` — the base URL for endpoint mode.
+- `ai.model` — the chat model name.
+- `ai.embedModel` — the embedding model name.
+- `ai.apiKey` — the endpoint API key. Write-only on the wire: the settings response reports only whether a key is present, never the key.
+- `quietMode` — the global ambient-quiet toggle.
+
+### What hot-swaps and what does not
+
+Endpoint-mode changes apply live. Updating the endpoint, model, embedding model, or key reconfigures the inference client, the embedder, and the redaction strictness without a restart.
+
+Switching `ai.mode` to `embedded` is persisted but not applied live. The handler returns an explicit instruction to restart the daemon with `-llama-bin` and `-llama-model`. Plan a restart when moving from endpoint to embedded inference.
+
+## Redaction strictness
+
+Redaction strictness is not a manual setting — it is derived. When the active inference endpoint is non-loopback, the daemon enables strict redaction automatically, adding the high-entropy heuristic on top of the structural rules. Switching from a local embedded model to a remote endpoint tightens redaction without operator action. See [redaction and the audit log](subsystems/redaction-and-audit).
+
+## Credentials
+
+Credentials are never configured in files. SSH passwords and AI API keys live exclusively in the OS keychain — Windows DPAPI, macOS Keychain, or Linux Secret Service — under the service name `ethrx-dragon`. The store keeps only an opaque keychain reference.
+
+On a headless Linux host without a Secret Service backend, the keychain probe fails and DRAGON degrades to session-only secrets rather than writing anything to disk.
+
+## RAG roots
+
+RAG ingestion is confined to the allowed roots in `-rag-roots`, default the user home and the data-directory parent. The daemon resolves symlinks and rejects sibling-prefix escapes, so a source path of `/home/userEVIL` does not satisfy a root of `/home/user`. Point the roots at the directories you intend to index and nothing wider.
+
+## Data directory layout
+
+Everything lives under one directory, created with `0o700` permissions and trivially backed up:
+
+```
+<data dir>/
+  dragon.db                       SQLite store: sessions, records, suggestions, settings, saved tree
+  audit/audit-YYYY-MM-DD.jsonl    hash-chained audit log, continuous across days
+  rag/chromem/                    persistent vector store
+  logs/{session}-{ts}.raw.log     per-session rotating raw byte logs
+  known_hosts                     TOFU SSH host keys, OpenSSH format
+```
+
+Secrets are not in this directory. They live in the OS keychain, referenced from the store by opaque ref only.
+
+## Device profiles and prompts
+
+Profiles and prompt templates are embedded in the daemon binary, so DRAGON runs self-contained. Override either by pointing `-profiles` or `-prompts` at a directory.
+
+- A device profile is a TOML file: prompt regexes, the mode state machine, pagination markers, and anomaly patterns. Adding one is pure data; register it for the UI picker.
+- A prompt template is a versioned data file carrying a mandatory version-and-task header, one system template plus one per task type.

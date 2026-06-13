@@ -1,0 +1,57 @@
+---
+title: CHAOS overview
+slug: overview
+product: CHAOS
+version: v0.1.0
+order: 10
+eyebrow: INTRODUCTION
+description: CHAOS is a transparent in-line WAN-emulation appliance for measurement-grade test and evaluation of devices under test.
+---
+
+# CHAOS overview
+
+CHAOS is a WAN-emulation test and evaluation appliance from ethrx. It sits in-line as a transparent layer-2 bridge between two endpoints and applies controlled, per-direction network impairments — latency, jitter, loss, rate limiting, queue bounds, duplication, reordering, and corruption — to the traffic passing through it. The device under test (DUT) requires no reconfiguration; CHAOS forwards traffic transparently and shapes it on the egress of each physical port.
+
+The product is delivered as hardware plus software, deployed and operated on-premises. At this release the control surface is the HTTP/JSON API exposed by the `chaosd` daemon and the `chaos` command-line client that drives it.
+
+## What CHAOS does
+
+- Bridges two physical data ports, `Port1` and `Port2`, at layer 2 without an IP on the data path.
+- Programs Linux `tc` qdiscs on each port's egress to impair traffic per direction, independently.
+- Reads back the applied kernel state after every change so the reported state is what the kernel holds, not what was requested.
+- Surfaces live qdisc statistics — bytes, packets, drops, overlimits, backlog — for each direction.
+- Reports backend capabilities so callers can gate on supported impairments before applying them.
+
+## Why per-direction
+
+Forward and return paths on a real WAN — particularly LEO and VLEO satellite links — are asymmetric. Symmetric-channel emulation hides failure modes that only appear when the two directions diverge. CHAOS models each direction as a separate egress qdisc stack. There is no convenience path that applies one state to both ports; asymmetric configuration is the default, and symmetric configuration is a deliberate two-call choice.
+
+## Data path
+
+Traffic crosses a transparent Linux bridge. Impairments are programmed on the egress qdisc of each port as a composed stack:
+
+```
+root: tbf       (rate limit + burst)
+   └── netem    (delay / jitter / loss / dup / reorder / corrupt)
+         └── pfifo  (bounded queue)
+```
+
+The stack is rooted at the lowest configured layer. When no rate limit is set, `netem` is the root directly — no token-bucket filter is inserted, so a latency-only impairment does not add token-bucket buffering to the path.
+
+## Surfaces in this release
+
+- `chaosd` — the appliance daemon. Owns the data plane and serves the API over a Unix domain socket.
+- `chaos-api` — the HTTP/JSON API: system info, per-direction impairment read/apply/clear, live statistics, and the stored calibration baseline. An OpenAPI 3 document is generated and served at `/swagger-ui`.
+- `chaos` — the operator CLI: one-shot subcommands, an interactive shell, and a live data-plane monitor.
+
+> The appliance runs on Linux. The daemon programs qdiscs through `rtnetlink` and requires `CAP_NET_ADMIN`; it does not shell out to `tc`, `ip`, or `iproute2` at runtime.
+
+## Roadmap
+
+This release ships the data plane, the control API, and the CLI. The scenario engine (time-varying impairment timelines), packet capture, sealed run artifacts, reporting, the web UI, authentication, licensing, updates, and remote telemetry are planned for later phases. Where this documentation describes a roadmap subsystem, it says so explicitly. Document only the behavior the appliance exposes today before relying on it.
+
+## Next steps
+
+- Read [core concepts and architecture](concepts) for the domain model and the qdisc composition rules.
+- Read [getting started](getting-started) to configure `chaosd` and apply a first impairment.
+- Read [the impairment surface](impairments) for the full set of impairment kinds and their parameters.

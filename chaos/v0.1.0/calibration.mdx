@@ -1,0 +1,56 @@
+---
+title: Calibration
+slug: calibration
+product: CHAOS
+version: v0.1.0
+order: 80
+eyebrow: SUBSYSTEMS
+description: How CHAOS measures impairment accuracy against tolerance bands, and the calibration baseline surfaced by the daemon.
+---
+
+# Calibration
+
+Calibration is how CHAOS substantiates its accuracy claims. The appliance is sold on measurement-grade impairment, so the accuracy is something the product proves rather than asserts. This page describes the calibration harness in this release and the baseline the daemon surfaces.
+
+## The harness
+
+The `chaos-calibrate` crate is the canonical calibration suite. It is split into a measurement-agnostic library and a suite that exercises it.
+
+The library defines a `TrafficBackend` trait — a source of data-plane measurements — and the `Measurement` and `MeasurementRequest` types. A request names a direction, the impairment applied to it, a probe packet size, an offered load, and a sample size. A measurement reports the three canonical dimensions: mean one-way latency, observed loss percentage, and achieved throughput in bits per second.
+
+The canonical tests drive impairments through the daemon's Unix-socket client against an in-process API server and assert each measurement against its tolerance band:
+
+| Test | Dimension | Tolerance |
+|---|---|---|
+| T-LAT-const | Constant latency | ±10 µs |
+| T-LOSS-pp | Bernoulli loss | ±0.1 percentage points |
+| T-RATE | Rate ceiling | ±1% |
+
+Each test runs across a sweep of packet sizes (64, 256, 1500 bytes) and offered rates. For rate tests the offered load exceeds the configured ceiling so the shaper binds.
+
+## Backends
+
+The `TrafficBackend` trait is the seam between the suite and the source of measurements. This release ships one backend: a model backend that synthesizes measurements from the applied impairment, applying small fixed instrument offsets within every band. The model backend makes the full point matrix, the API round-trip, and the tolerance math executable in CI where no daemon, NICs, or traffic rig exist. It exercises the comparison machinery; it does not validate real-world accuracy.
+
+A hardware traffic-generation adapter — running on a calibration rig with hardware-timestamping NICs — is the deferred second backend. It drops in behind the same trait without changing the suite. Real-world accuracy validation requires that adapter.
+
+> The model backend confirms the suite and the tolerance bands run end to end. It is not a substitute for rig measurement. Treat the model results as a structural check, not an accuracy attestation.
+
+## Expected-value helpers
+
+The library exposes the expected values an impairment requests, used to evaluate a measurement:
+
+- expected mean latency — the constant duration, or the stochastic mean.
+- expected Bernoulli loss percentage — Gilbert-Elliott has no single nominal rate and returns none.
+- expected rate ceiling in bits per second.
+
+## The calibration baseline
+
+The daemon surfaces a stored calibration baseline through `GET /v1/calibration/baseline`, served from the configured `baseline_path` (default `/var/lib/chaos/calibration-baseline.json`). The CLI surfaces the same data through `chaos calibration baseline show`. The baseline is opaque JSON at this layer; when none is stored, the endpoint returns `404`.
+
+The intent is that a per-appliance baseline ships with each unit so accuracy claims are unit-specific and defensible. Customer-triggered self-calibration, periodic background calibration, and stale-baseline warnings are roadmap features.
+
+## Next steps
+
+- [The CLI](cli) — `chaos calibration baseline show`.
+- [The HTTP API](api) — the baseline endpoint.

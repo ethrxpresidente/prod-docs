@@ -1,0 +1,78 @@
+---
+title: Copilot, inference, and RAG
+slug: subsystems/copilot-and-rag
+product: DRAGON
+version: v0.1.0
+order: 50
+eyebrow: SUBSYSTEMS
+description: The inference orchestrator, embedded and endpoint model modes, context assembly, command classification, and hybrid retrieval.
+---
+
+# Copilot, inference, and RAG
+
+The copilot surfaces anomalies, answers questions, and stages next-command suggestions. It is assembled from four subsystems: context assembly builds the prompt, the orchestrator drives inference, the inference client talks to a model, and RAG grounds the answers in retrieved corpus text. Every piece of context passes through redaction before it reaches a model.
+
+## Inference modes
+
+DRAGON runs inference through one client interface implemented two ways.
+
+### Embedded mode
+
+The embedded client supervises a bundled `llama.cpp` `llama-server` as a child process over loopback HTTP. This is the offline default. The supervisor moves through states — idle, starting, running, backoff, failed, stopped — gates readiness on a health check, and uses bounded exponential backoff with a circuit breaker (base `500` ms, cap `30` s, max `5` attempts, reset after `60` s stable). Logs are ring-buffered. Crash isolation is strict: a model crash never touches live sessions.
+
+Embedded mode is selected at daemon launch with `-llama-bin` and `-llama-model`. Air-gapped operators import a GGUF model file from disk or USB.
+
+> In `v0.1.0` switching to embedded mode requires a daemon restart with the launch flags. A settings update to embedded mode is persisted but not applied live, and the handler returns an explicit instruction to restart.
+
+### Endpoint mode
+
+The endpoint client speaks the OpenAI-compatible chat-completions protocol, covering LM Studio, Ollama, vLLM, llama-server, and cloud providers in one interface. Set the base URL, API key, and model name. The client normalizes the `/v1` path and falls back gracefully when a server rejects the `response_format` parameter.
+
+Endpoint mode hot-swaps live. Changing the endpoint, model, embedding model, or key reconfigures the client, the embedder, and the redaction strictness without a restart.
+
+## Context assembly
+
+Small local models are viable only with disciplined context construction, so context assembly is a first-class subsystem rather than a prompt string. It turns a request — a rolling structured event window, a profile summary, the current mode, RAG retrieval results, and the user question or trigger — into a rendered system and user prompt pair under a token budget.
+
+Truncation is deterministic. The assembler drops the oldest events first, then the lowest-ranked RAG chunks. The user question, the trigger, the profile, and the mode are never truncated; the assembler reports an over-budget condition rather than mutilating the fixed parts. Oversized event outputs are head-and-tail clipped.
+
+Prompt templates are versioned data files, one system template plus one per task type — `explain-output`, `diagnose`, `suggest-next-command`, and `summarize-session`. Each template carries a mandatory version-and-task header. A context hash over the assembled prompt is recorded on every suggestion and audit entry, and RAG sources receive citation identifiers `S1` through `Sn` in rank order.
+
+## The orchestrator
+
+The orchestrator consumes the event bus and runs two pipelines.
+
+- Ambient — anomaly-gated and debounced (default `5` s), collapsing bursts, with at most one in-flight ambient analysis per session.
+- On-demand — questions and tasks that preempt ambient by cancelling the in-flight analysis.
+
+Every context piece passes through the redaction hook before model contact. Results are delivered as insights and suggestions, and an audit hook records the model call, redaction, insight, and suggestion. A global quiet toggle suppresses ambient output.
+
+> In `v0.1.0` ambient analysis is implemented but not invoked from the daemon — only the global quiet toggle is wired. Ambient triggering is effectively gated off until a per-session control is plumbed.
+
+## Response contract and safety
+
+Model output is parsed against a constrained contract into insights, suggestions, and an answer. The parser tolerantly extracts the first balanced JSON object carrying contract keys, stripping markdown fences and reasoning blocks. It degrades gracefully: unparseable output becomes a plain-text answer flagged degraded, and never fabricates a staged suggestion.
+
+Every suggestion is classified `read-only`, `config-impacting`, or `destructive`. Classification is rules-only — no model inference decides it. Profile rules always win; otherwise built-in rules apply, and the model may only escalate severity, never downgrade it. This is a product-safety invariant.
+
+Accepted suggestions land in the input line for the operator to send. DRAGON never auto-transmits a suggestion, and there is no setting to override that.
+
+## Retrieval
+
+RAG grounds answers in user-pointed text. The pipeline is extract, redact, chunk, embed, store, and on query, retrieve.
+
+### Corpora
+
+- `docs` — user-pointed directories of Markdown, TXT, HTML, and PDF, with incremental re-indexing via a hash-and-mtime manifest.
+- `configs` — user-pointed device configuration exports, ingested section-aware.
+- `session-history` — completed command records, auto-ingested post-redaction. This is the "I have seen this error before" capability.
+
+### Pipeline detail
+
+Chunking is structure-aware: heading-aware for Markdown, section-aware for configs, command-and-output for session records, with a roughly `1200`-rune target and `200`-rune overlap. PDF extraction is bounded — a `30` s timeout, a `20` MB cap, a distinct error for scanned image-only PDFs, and panic-to-error conversion. The embedder is OpenAI-compatible over the embeddings endpoint.
+
+### Hybrid retrieval
+
+Retrieval fuses vector top-k search with BM25 keyword search (Okapi, k1 `1.2`, b `0.75`) by reciprocal-rank fusion. The vector store is `chromem-go`, pure Go, behind an interface so it can be swapped without touching callers. Retrieval degrades rather than failing: with no embedder or on an embedding failure, it falls back to BM25-only with a warning. Source attributions carry through to the UI so insights cite where they came from.
+
+> The BM25 keyword index is in-memory and re-seeded on start. Because the vector store has no bulk enumeration, directory document sources are not fully re-seeded into BM25 across restarts.

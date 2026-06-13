@@ -1,0 +1,153 @@
+---
+title: Getting started
+slug: getting-started
+product: CHAOS
+version: v0.1.0
+order: 20
+eyebrow: GET STARTED
+description: Configure chaosd, bind the data ports, start the daemon, and apply your first per-direction impairment with the chaos CLI.
+---
+
+# Getting started
+
+This guide takes you from a configured appliance to a first applied impairment. It assumes CHAOS is installed on the appliance and the two data-port interfaces are bridged at layer 2.
+
+## Prerequisites
+
+- A Linux appliance with two physical data interfaces joined to a transparent bridge with no IP on the data path.
+- `CAP_NET_ADMIN` available to the daemon process. On the appliance, `chaosd` runs as a systemd service with `AmbientCapabilities=CAP_NET_ADMIN`.
+- The `chaosd` daemon and the `chaos` CLI binaries installed.
+
+`chaosd` runs on Linux only. The CLI parses arguments anywhere, but it talks to the daemon over a Unix domain socket, so it executes commands on a Unix host.
+
+## Configure the daemon
+
+`chaosd` reads its configuration from `/etc/chaos/chaosd.toml` by default. The Phase 1 schema is minimal: the two data-port interface names plus the socket and baseline paths.
+
+```toml
+# /etc/chaos/chaosd.toml
+port1_interface = "enp4s0"
+port2_interface = "enp5s0"
+
+# Optional — defaults shown.
+socket_path   = "/run/chaosd/chaosd.sock"
+baseline_path = "/var/lib/chaos/calibration-baseline.json"
+```
+
+`port1_interface` and `port2_interface` are required. Unknown keys are rejected, so a typo fails loudly at startup rather than being silently ignored.
+
+### Port binding convention
+
+`Port1` must map to the lower PCI BDF and `Port2` to the higher. At startup `chaosd` resolves the interface names, inspects their BDFs, and refuses to start if the ordering is violated. This keeps `Port1` and `Port2` stable and meaningful across appliances and across sealed artifacts read months later, independent of Linux interface naming.
+
+## Start the daemon
+
+On the appliance the daemon runs under systemd. To run it directly with a specific config:
+
+```bash
+chaosd /etc/chaos/chaosd.toml
+```
+
+`chaosd` resolves the bindings, enforces the BDF convention, opens the netlink backend, and serves the API on the configured Unix socket. It logs to the systemd journal when available and to stderr otherwise. It shuts down cleanly on `SIGTERM` or `SIGINT`, unlinking the socket so the next start binds cleanly.
+
+## Point the CLI at the socket
+
+The `chaos` CLI defaults to `/run/chaosd/chaosd.sock`. Override it with `--socket` or the `CHAOS_SOCKET` environment variable.
+
+```bash
+chaos --socket /run/chaosd/chaosd.sock system
+```
+
+`chaos system` prints the daemon version, the resolved port bindings, and the backend capabilities:
+
+```
+chaosd 0.1.0
+
+Ports
+┌───────────┬───────────┬───────────────┐
+│ Direction │ Interface │ BDF           │
+├───────────┼───────────┼───────────────┤
+│ port1     │ enp4s0    │ 0000:04:00.0  │
+│ port2     │ enp5s0    │ 0000:05:00.0  │
+└───────────┴───────────┴───────────────┘
+
+Capabilities
+  …
+  distributions: uniform, normal, pareto
+  backend:       …
+```
+
+## Apply a first impairment
+
+Apply a constant 40 ms one-way delay to `Port1`:
+
+```bash
+chaos impairments set port1 --latency-ms 40
+```
+
+Read it back:
+
+```bash
+chaos impairments get port1
+```
+
+The read-back is the kernel's actual state. If the kernel rounded a value or declined a parameter, the difference appears as a divergence line in the output.
+
+Apply stochastic latency with jitter and a distribution:
+
+```bash
+chaos impairments set port1 --latency-ms 30 --jitter-ms 5 --distribution pareto
+```
+
+Combine impairments — loss plus a rate ceiling on `Port2`:
+
+```bash
+chaos impairments set port2 --loss-pct 1 --rate-mbps 25
+```
+
+Clear a direction:
+
+```bash
+chaos impairments clear port1
+```
+
+## Apply a full impairment body
+
+The convenience flags cover the common one-knob cases. For a full composite, supply an `Impairment` JSON body — the exact wire shape the API accepts on `PUT /v1/impairments/{direction}`:
+
+```bash
+chaos impairments set port1 --file leo-satcom.json
+cat lossy-link.json | chaos impairments set port2 --file -
+```
+
+```json
+{
+  "latency": {
+    "kind": "stochastic",
+    "mean": 30000000,
+    "jitter": 5000000,
+    "distribution": { "kind": "pareto" },
+    "correlation": 0.25
+  },
+  "loss": { "model": "bernoulli", "pct": 0.1 },
+  "rate": { "bps": 25000000, "burst_bytes": 50000 }
+}
+```
+
+Latency `mean`, `jitter`, and `duration` are nanoseconds. `pct` is a percentage in `[0, 100]`. `rate.bps` is bits per second. See [the impairment surface](impairments) for the full set of fields.
+
+## Watch the data plane
+
+Open the live dashboard:
+
+```bash
+chaos monitor
+```
+
+The monitor polls each direction's applied impairment and qdisc statistics at roughly 1 Hz and renders throughput, packets per second, drops, and backlog per port. Press `q` to quit.
+
+## Next steps
+
+- [Core concepts and architecture](concepts) — the domain model and qdisc composition.
+- [The HTTP API](api) — the endpoints behind every CLI command.
+- [The CLI](cli) — one-shot mode, the interactive shell, and the monitor.

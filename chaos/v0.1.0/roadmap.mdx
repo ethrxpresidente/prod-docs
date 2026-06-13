@@ -1,0 +1,51 @@
+---
+title: Roadmap and lifecycle
+slug: roadmap
+product: CHAOS
+version: v0.1.0
+order: 100
+eyebrow: LIFECYCLE
+description: What CHAOS ships today, the subsystems planned for later phases, and how to tell present behavior from roadmap intent.
+---
+
+# Roadmap and lifecycle
+
+This release is the first cut of CHAOS: the data plane, the control API, the CLI, and the calibration harness. Several subsystems named in the product architecture are scaffolded but not yet implemented. This page draws the line between what the appliance does today and what is planned, so you do not build against behavior that is not there yet.
+
+## Shipping in this release
+
+- Transparent layer-2 bridge data plane with per-direction egress impairment.
+- The full impairment composite — latency, loss, duplication, reordering, corruption, rate, queue — programmed through the `tbf → netem → pfifo` qdisc stack via `rtnetlink`.
+- Post-operation read-back with divergence detection on every data-plane operation.
+- Live qdisc statistics per direction.
+- The `chaosd` daemon serving the HTTP/JSON API over a Unix socket, with a generated OpenAPI document and Swagger UI.
+- The `chaos` CLI: one-shot subcommands, the interactive shell, and the live monitor.
+- The calibration harness with the canonical tolerance-band tests, driven by an in-process model backend.
+
+## Planned for later phases
+
+The following subsystems are part of the product plan but not implemented in this release. Where this documentation set mentions them, it marks them as roadmap.
+
+- Scenario engine — declarative, time-varying impairment timelines in TOML, with `set`, `ramp`, `repeat`, and seeded `random` steps and a dry-run mode. This release applies fixed single-shot impairment states; full timeline scenarios are the next phase.
+- Web UI — a browser control surface served by the daemon. The CLI and API are the surfaces today.
+- Packet capture — hardware-timestamped pcap capture bound to run lifecycle, with rotation.
+- Structured event log — schema-versioned JSONL of every state transition.
+- Run lifecycle and sealed artifacts — `pending → running → sealing → sealed` runs producing a manifest of SHA-256 hashes and exportable reports.
+- Authentication — local accounts and OIDC, TLS, and a network-facing listener. The API is Unix-socket-only today, with no auth on that surface.
+- Licensing — hardware-bound license verification with graceful read-only expiration.
+- Updates — signed package updates with health-checked rollback and an offline bundle path.
+- Remote telemetry — Prometheus metrics and optional remote log and metric shipping. Structured local logging exists today.
+- Hardware self-calibration — customer-triggered and periodic background calibration with stale-baseline warnings, driven by a rig traffic backend behind the existing harness seam.
+
+## Reading the version
+
+The product version is `0.1.0`, carried by the workspace and reported by `chaosd` on `GET /v1/system` and by `chaos system`. The wire-shape conventions — nanosecond durations, epoch-nanosecond timestamps, tagged enums, unknown-field rejection — are fixed so that data emitted now remains readable as the product evolves.
+
+## Operating posture
+
+The appliance is on-premises and single-tenant. The architecture does not preclude later multi-tenant or cloud-telemetry operation, but neither is present today. Federal-market posture — controlled builds, an SBOM per release, signed updates, and FIPS-validated cryptography where used — shapes the product but is realized progressively across the phases above.
+
+## Next steps
+
+- [Overview](overview) — what CHAOS is and where it fits.
+- [Configuration and operations](configuration) — running the daemon today.

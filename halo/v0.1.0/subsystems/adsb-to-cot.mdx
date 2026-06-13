@@ -1,0 +1,57 @@
+---
+title: ADS-B to CoT
+slug: subsystems/adsb-to-cot
+product: HALO
+version: v0.1.0
+order: 80
+eyebrow: SUBSYSTEMS
+description: The adsbtocot package decodes ADS-B with a local SDR and forwards aircraft tracks as Cursor-on-Target into a TAK mesh.
+---
+
+# ADS-B to CoT
+
+The `adsbtocot` package turns a node into an ADS-B sensor for a TAK network. It decodes 1090 MHz ADS-B locally with a software-defined radio, then forwards aircraft tracks as Cursor-on-Target onto the mesh. HALO builds it as `adsbtocot` `1`.
+
+## Pipeline
+
+The path is local and self-contained — no external feed and no open network sockets on the decoder.
+
+```
+RTL-SDR  ->  dump1090  ->  aircraft.json  ->  adsbcot  ->  CoT/TAK
+```
+
+`dump1090` reads the SDR and writes decoded aircraft state to JSON. `adsbcot` reads that JSON, converts each track to a CoT event, and sends it to a TAK destination over multicast or unicast.
+
+## Components
+
+`adsbtocot` packages `ADSBCOT` from PyPI as pure Python — native extensions for `aiohttp`, `yarl`, `multidict`, and `frozenlist` are disabled at build time so nothing ELF lands in the image. It depends on `python3`, `dump1090`, and `rtl-sdr`. The console scripts `adsbcot`, `pytak`, and `aircot` are installed with their shebangs normalized to the target Python.
+
+## Configuration
+
+`adsbcot` reads `/etc/adsbcot/adsbcot.ini`, preserved as a conffile across upgrades. It has two sections: the feed and the CoT output.
+
+```ini
+[pytak]
+COT_URL = udp+wo://239.2.3.1:6969
+COT_STALE = 120
+COT_HEADER = TAK-ADSB
+
+[adsbcot]
+FEED_URL = file:///var/run/dump1090/aircraft.json
+IDENT = OPENMANET-ADSB01
+```
+
+`FEED_URL` points at the local `dump1090` JSON output. `COT_URL` is the TAK destination — the default writes multicast CoT to `239.2.3.1:6969` for an ATAK mesh. `COT_STALE` sets how long, in seconds, a track stays valid. `IDENT` identifies this sensor.
+
+## Service
+
+`adsbcot` runs under `procd` with a respawn policy and reloads when its config changes. On start, the init script reads the first IPv4 address on the `br-ahwlan` bridge and exports it as `PYTAK_MULTICAST_LOCAL_ADDR`, so multicast CoT egresses on the mesh-facing interface. If no address is found, it logs and continues without binding a specific local address.
+
+## First-boot defaults
+
+A uci-default applies decoder settings once on first boot and records that it has run. It configures `dump1090` for JSON-only output to `/var/run/dump1090` with a default gain of `49.6` on device index `0`, and explicitly disables every `dump1090` network socket — the decoder produces only the JSON file that `adsbcot` consumes. Both `adsbcot` and `dump1090` ship stopped and disabled, so an operator enables the ADS-B pipeline deliberately rather than having it run by default.
+
+## Where to go next
+
+- [openmanetd](subsystems/openmanetd) covers the node's other Cursor-on-Target source — GNSS position.
+- [Configuration and operations](configuration) covers enabling and managing services.

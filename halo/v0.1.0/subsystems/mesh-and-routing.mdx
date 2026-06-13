@@ -1,0 +1,59 @@
+---
+title: Mesh and routing
+slug: subsystems/mesh-and-routing
+product: HALO
+version: v0.1.0
+order: 40
+eyebrow: SUBSYSTEMS
+description: The HALO mesh stack — 802.11s HaLow on Morse Micro radios, batman-adv layer-2 routing, alfred data exchange, and mesh11sd.
+---
+
+# Mesh and routing
+
+The mesh is built from a HaLow radio link, layer-2 routing over `batman-adv`, and decentralized fact distribution over `alfred`. `mesh11sd` keeps mesh parameters applied dynamically. This page describes each component and how they compose.
+
+## HaLow link
+
+Nodes form an 802.11s mesh on a Morse Micro HaLow radio in the sub-gigahertz S1G band. The radio is configured through standard OpenWrt `wifi-device` and `wifi-iface` UCI blocks. A mesh interface carries a `mesh_id` — the mesh SSID — and uses SAE encryption.
+
+The dashboard reads radio state from the `iwinfo` ubus object and the operating mode from `morse-mode`. A representative mesh radio reports `Mesh Point` mode on channel `44`, frequency `924000` kHz (`924 MHz`), `8 MHz` bandwidth (`htmode` `8`), txpower `24` dBm, hardware mode `ah`, and a chipset of `Morse Micro MM6108A1`. Encryption reports as WPA3-SAE.
+
+## batman-adv routing
+
+`batman-adv` (B.A.T.M.A.N. Advanced) is a layer-2 mesh routing protocol that operates on raw Ethernet frames, so the entire mesh appears as a single switched segment. HALO builds batman-adv `2025.4` with the BATMAN_V algorithm enabled.
+
+A mesh radio is enslaved to a `bat0` soft interface. On a node, network interfaces typically include:
+
+- `bat0` — the batman-adv soft interface, protocol `batadv`.
+- `batmesh0` — a hard interface (`batadv_hardif`) backing `bat0` over `wlan0`.
+- `ahwlan` / `br-ahwlan` — the access-side bridge, e.g. `10.41.0.1/16`.
+- `lan` — the wired uplink, e.g. `192.168.0.230/24` over `eth0`.
+
+batman-adv maintains two tables that the dashboard polls every `10s`:
+
+- The originator table lists every reachable node in the mesh, each with a throughput metric, the next-hop MAC, the outgoing interface, and time since the last originator message.
+- The neighbor table lists one-hop peers with a link-speed metric and the interface they were heard on.
+
+These tables drive the mesh topology view. Hostnames are resolved where available via `alfred`.
+
+## alfred data exchange
+
+`alfred` — the Almighty Lightweight Fact Remote Exchange Daemon — distributes arbitrary local information across the mesh in a decentralized fashion over IPv6 link-local multicast. It requires no configuration to discover peers. HALO builds `alfred` `2025.5`.
+
+`alfred` is how hostnames, gateway status, node descriptors, position, and address-reservation records propagate. `openmanetd` runs as an `alfred` primary, publishing GNSS-derived position and node data and consuming the same from peers. Optional VIS and GPSD integration are available as build options.
+
+## mesh11sd
+
+`mesh11sd` is a dynamic 802.11s configuration daemon. HALO builds `openmanet_mesh11sd` `1.2.0`. Many mesh parameters cannot be set in the UCI wireless config because the mesh interface must be up before they can be applied; without a daemon they fail silently or drop nodes when the network restarts.
+
+`mesh11sd` watches configured mesh parameters and applies them via `iw` as required, so settings take effect immediately without restarting the wireless network. The OpenMANET variant adds a reload path that reconfigures `wpa_supplicant` whenever the 11s mesh configuration changes, which the Morse Micro mesh implementation requires.
+
+## Tooling
+
+`batctl` is built alongside batman-adv for command-line inspection and control of the mesh from the device. The dashboard surfaces the same originator and neighbor data without requiring shell access.
+
+## Where to go next
+
+- [Boards and drivers](subsystems/boards-and-drivers) covers the HaLow driver and per-board radio defaults.
+- [openmanetd](subsystems/openmanetd) covers the alfred primary and GNSS handling.
+- [The dashboard](subsystems/dashboard) covers how mesh telemetry is rendered.

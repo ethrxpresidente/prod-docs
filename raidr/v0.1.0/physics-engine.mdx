@@ -1,0 +1,94 @@
+---
+title: Propagation physics engine
+slug: physics-engine
+product: RAIDR
+version: v0.1.0
+order: 40
+eyebrow: PHYSICS
+description: The RAIDR link budget — FSPL, diffraction, atmospheric, rain, and fade margin — and the ITU-R recommendations behind each term.
+---
+
+# Propagation physics engine
+
+`trnp-physics` computes link budgets from ITU-R recommendations. Every routine is a pure function on plain structs, documented in source against the recommendation it implements and the simplifying assumptions it makes. The crate compiles to native and `wasm32` unchanged, so server and client produce identical numbers.
+
+## The link budget
+
+`analyze_link` composes the lower-level routines into a single `LinkResult`. It takes link parameters, a terrain profile, transmit and receive antenna patterns, and the path bearings, and computes the budget end to end.
+
+The receive power follows the chain:
+
+```
+EIRP        = tx_power − tx_cable_loss + tx_gain
+rx_power    = EIRP − FSPL − diffraction − atmospheric − rain
+              − rx_cable_loss + rx_gain
+SNR         = rx_power − noise_floor
+```
+
+From the SNR, the engine selects the best modulation, computes the Shannon limit and the achievable PHY rate, and derives two margins:
+
+```
+power_margin = rx_power − (noise_floor + required_SNR + fade_margin)
+snr_margin   = SNR − required_SNR − fade_margin
+```
+
+### Verdict
+
+The budget closes to one of three verdicts.
+
+- `Ok` — power margin is at least 10 dB and SNR margin is at least 6 dB, and any target data rate is met.
+- `Marginal` — at least one margin is positive but below threshold, with no data-rate block.
+- `Fail` — a margin is negative, or the target data rate is not met.
+
+Physical closure and data-rate closure are evaluated separately. A link can carry signal yet still fail if it cannot meet a requested throughput.
+
+## Loss and margin terms
+
+Each term maps to a named ITU-R recommendation.
+
+| Term | Recommendation | Notes |
+|------|----------------|-------|
+| Free-space path loss | ITU-R P.525 / Friis | `20·log10(4πd/λ)`; +6 dB per octave of distance or frequency |
+| Diffraction | ITU-R P.526-15 | Single knife-edge plus Deygout multi-edge construction |
+| Atmospheric absorption | ITU-R P.676 (Annex 2, simplified) | Oxygen plus water-vapour specific attenuation |
+| Rain attenuation | ITU-R P.838-3 | `k·R^α` regression by frequency and polarization |
+| Fade margin | ITU-R P.530-17 | Multipath fade for digital LOS, by geoclimatic factor |
+| Noise floor | Thermal | `−174 + 10·log10(B) + NF` dBm at 290 K |
+
+### Free-space path loss
+
+`fspl_db(distance_m, freq_hz)` returns the isotropic-to-isotropic loss. Doubling distance or frequency adds `20·log10(2)` ≈ 6.02 dB. The function returns NaN for non-positive distance or frequency.
+
+### Diffraction
+
+The single knife-edge loss computes the Fresnel-Kirchhoff parameter `v` from obstacle clearance and the two leg distances, then evaluates the P.526-15 closed-form `J(v)`. Below the `v = −0.78` threshold the loss is zero. `deygout_diffraction_db` applies the Deygout recursive construction over the terrain profile, splitting at the principal edge and recursing on each side only when `v > 0`, bounded by `max_diffraction_edges` (default 3).
+
+### Atmospheric absorption
+
+The atmospheric profile carries temperature, pressure, and water-vapour density, defaulting to the ITU-R standard atmosphere (`288.15 K`, `1013.25 hPa`, `7.5 g/m³`). Specific attenuation sums oxygen and water-vapour contributions and scales by path length. At 2.4 GHz the term is well under `0.02 dB/km` — negligible on terrestrial links but material in the millimetre bands.
+
+### Rain attenuation
+
+`rain_specific_attenuation_db_per_km` evaluates `γ = k·R^α` with frequency- and polarization-dependent coefficients from the P.838-3 regressions. Horizontal polarization attenuates more than vertical because raindrops are oblate; circular is the P.838 average of the two. Below roughly 3 GHz the contribution is negligible even in heavy rain.
+
+### Fade margin
+
+`p530_fade_margin_db` returns the multipath fade margin required to hold a target availability, using the inverted P.530-17 deep-fade asymptote. It depends on path length, frequency, the two antenna altitudes, the geoclimatic factor for the climate zone, and the availability fraction. The climate zones order as expected: tropical demands the most margin, arid the least.
+
+## Antennas and modulation
+
+### Antenna patterns
+
+An `AntennaPointing` carries azimuth, elevation, and boresight gain. The engine computes the relative azimuth and elevation between the antenna boresight and the path direction, then looks up the realised gain from the pattern. Two patterns ship: `Isotropic` (constant gain) and `TablePattern` (bilinearly interpolated azimuth/elevation table).
+
+### Adaptive modulation
+
+The modulation table spans BPSK 1/2 through 256QAM 5/6, each with a bits-per-symbol value and a required SNR for BER `1e-6` with FEC. `best_modulation_for_snr` returns the highest-throughput modulation whose required SNR the link meets, or none if the SNR falls below BPSK 1/2.
+
+### Data rate
+
+`achievable_rate_bps` is the gross PHY rate, `bandwidth × bits_per_symbol`, with one symbol per Hz. `shannon_limit_bps` is the Shannon-Hartley capacity at the actual SNR. No framing or header overhead is modeled; a caller that needs net throughput applies its own multiplier.
+
+## Earth curvature
+
+Terrain profiles are corrected for earth curvature before analysis. `earth_bulge_m(d1, d2, k)` returns the chord rise `d1·d2 / (2·k·Rₑ)`, and `apply_earth_bulge` applies it across the intermediate profile samples while preserving the antenna endpoint heights. The default refraction factor is `k = 4/3`, the standard atmosphere value.

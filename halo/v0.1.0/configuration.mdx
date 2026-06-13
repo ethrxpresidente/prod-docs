@@ -1,0 +1,68 @@
+---
+title: Configuration and operations
+slug: configuration
+product: HALO
+version: v0.1.0
+order: 90
+eyebrow: OPERATIONS
+description: Configure and operate a HALO node — UCI and service files, the ubus surface, dashboard maintenance actions, and where LuCI fits.
+---
+
+# Configuration and operations
+
+A HALO node is configured the OpenWrt way — UCI config, `procd` services, and `ubus` — with the dashboard and LuCI as the two web surfaces on top. This page covers where configuration lives, how the dashboard reaches it, and the operational levers.
+
+## Configuration model
+
+Device configuration is UCI under `/etc/config`. Mesh and application packages add their own config files and preserve operator edits as conffiles across upgrades:
+
+- `/etc/config/batman-adv` — batman-adv mesh routing.
+- `/etc/config/alfred` — alfred data exchange.
+- `/etc/config/mesh11sd` — dynamic 802.11s parameters.
+- `/etc/config/gpsd` — GNSS daemon.
+- `/etc/config/uhttpd` — web server and the dashboard alias.
+- `/etc/openmanetd/config.yml` — the openmanetd manager (YAML, not UCI).
+- `/etc/adsbcot/adsbcot.ini` — ADS-B to CoT forwarding.
+
+Services are `procd` init scripts in `/etc/init.d`. Start, stop, enable, and disable them the standard way.
+
+```bash
+/etc/init.d/openmanetd restart
+/etc/init.d/adsbcot disable
+```
+
+## The ubus surface
+
+The dashboard reads and writes the device through `ubus`. Confirmed objects on a node include `system`, `network`, `network.interface`, `network.wireless`, `iwinfo`, `morse-mode`, `mesh11s`, `firewall`, `dhcp`, `dnsmasq`, `uci`, `session`, `hostapd`, `wpa_supplicant`, `luci`, and `luci-rpc`. The dashboard's read paths — board, system info, interfaces, radio, associated clients, mesh mode, firewall, leases, and BATMAN originators and neighbors — are live in `v0.1.0`.
+
+## Dashboard maintenance actions
+
+The dashboard's Settings page exposes device operations. In `v0.1.0` several of these are integration points still being wired to live ubus calls; the intended bindings are:
+
+- Hostname and timezone — `uci set` and `uci commit`.
+- Backup and restore — `luci generateBackup` and `restoreBackup`.
+- Reboot — `system reboot`.
+- The Diagnostics ping tool — `file exec`.
+- The setup wizard — applies configuration through UCI calls on finish.
+
+Until those are wired on a given build, perform the equivalent change through LuCI or the CLI.
+
+## Reaching LuCI
+
+The dashboard does not cover every OpenWrt setting. The sidebar's `Advanced Config` link opens LuCI at `/cgi-bin/luci` in a new tab. HALO ships LuCI components for the OpenMANET stack — `luci-mod-home`, `luci-app-morseconfig`, the Morse AP and EKH wizards, a range test app, the mesh visualizer library, and OpenMANET themes — so mesh-specific configuration is available there.
+
+## Operating the mesh
+
+batman-adv forms the mesh automatically once radios are enslaved to `bat0`. `mesh11sd` keeps mesh parameters applied without restarting the wireless network. `alfred` discovers peers over IPv6 link-local multicast with no configuration. To inspect mesh state from the shell, use `batctl`; to inspect it from the browser, use the dashboard's network and mesh views, which poll the originator and neighbor tables every `10s`.
+
+`openmanetd` restarts automatically when `bat0` comes up, re-establishing its alfred bindings and GNSS publishing. Position flows from `gpsd` through `openmanetd`, which can republish it as NMEA and as CoT.
+
+## Upgrades
+
+Firmware builds are pinned to a git sha for repeatable output, and updates from the feed are integrated into OpenMANET when a new build is cut. There is no fixed cadence. Conffiles listed above survive package upgrades, so operator edits to mesh, daemon, and ADS-B configuration persist.
+
+## Where to go next
+
+- [Getting started](getting-started) covers building and installing the stack.
+- [The dashboard](subsystems/dashboard) covers each operations page in detail.
+- [openmanetd](subsystems/openmanetd) covers the manager daemon's configuration.

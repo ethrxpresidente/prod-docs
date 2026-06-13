@@ -1,0 +1,76 @@
+---
+title: LLM integration
+slug: llm-integration
+product: RAIDR
+version: v0.1.0
+order: 80
+eyebrow: ROADMAP
+description: The proposed natural-language orchestration layer over the RAIDR engine — design, model recommendations, and the telemetry calibration loop.
+---
+
+# LLM integration
+
+> Status: PROPOSED. This design is documented but not yet implemented in `v0.1.0`. It describes how a local LLM should — and should not — extend the RAIDR engine.
+
+The principle is narrow. A local, tool-calling LLM acts as a natural-language interface and explanation layer over the existing RAIDR API. It never performs numerical calculation. It calls the engine and narrates the results.
+
+## Orchestrator, not calculator
+
+The LLM parses intent, calls the appropriate RAIDR endpoints, and turns structured JSON into operator-readable narrative. The deterministic Rust engine remains the sole source of every number.
+
+```
+user query ──► local LLM (tool-calling)
+                 - parses intent
+                 - calls /links/analyze, /mesh/route, /relay/plan, ...
+                 - narrates JSON → English
+                       │
+                       ▼
+                 RAIDR Rust engine (deterministic, tested)
+```
+
+Two rules follow.
+
+- Numerical values in LLM output are always citations from tool results, enforced by the system prompt and validated against the structured response before display.
+- The engine stays authoritative. FSPL, fade margin, and path-finding are correct in Rust; an LLM would hallucinate digits. The LLM calls these functions, never replaces them.
+
+## Where it adds value
+
+- A tool-using natural-language interface. "Plan a 2 Mbps mesh from gateway to drone, max four hops" parses to calls against `/mesh/route` and `/relay/plan`, then a narrated result.
+- Synthesising recommendations. The protocol advisor already returns ranked options with reasons and tradeoffs; the LLM folds them into a one-paragraph summary tailored to mission context.
+- Anomaly explanation over telemetry. "node-7 dropped 12 dB at 14:32 — why" correlates the reported measurement against physics predictions, weather, and geometry, and proposes a cause.
+- Mission-context reasoning. Folding geometry, intent, and soft constraints into options the rule-based advisor cannot easily encode.
+
+## Where it does not
+
+- Numerical computation. Use the engine.
+- High-precision telemetry calibration. Fitting residuals between predicted and observed RSSI is a regression problem for a Gaussian Process or gradient-boosted model, not an LLM.
+
+## Model recommendations
+
+The design pairs a model to the deployment hardware. All recommendations are local and offline.
+
+| Target | Model | Notes |
+|--------|-------|-------|
+| Workstation, no hardware ceiling | Qwen 2.5 72B Instruct | Strongest tool-calling and math reasoning at scale |
+| Workstation alternative | Llama 3.3 70B Instruct | Marginally weaker on numbers, broadest tooling support |
+| Visible reasoning traces | DeepSeek-R1-Distill-Llama-70B | Explicit chain-of-thought for auditable planning |
+| Small-form-factor x86 | Hermes 3 Llama 3.1 8B | Tuned for agentic tool-use and structured output |
+| Single mid-range GPU | Qwen 2.5 14B Instruct | Materially better than 8B class, fits on one RTX 4070 |
+| Raspberry Pi 5 (8 GB) | Phi-3.5-mini-instruct (3.8B) | 128K context, ~3–6 tok/s, plan for retries on tool calls |
+
+Ollama is the path of least resistance for the inference runtime; vLLM is the production-grade GPU alternative.
+
+## Telemetry calibration loop
+
+Closing the loop on real-world divergence from ITU-R predictions is a separate component — not an LLM job.
+
+1. Collect. Each field node reports timestamp, geometry, predicted and measured receive power, and predicted and measured packet error rate.
+2. Fit. Periodically fit a regression over residuals (`measured − predicted`) against features like distance, frequency, vegetation class, terrain roughness, time of day, and season. Output is a per-region bias map with confidence intervals.
+3. Apply. Bias corrections feed back into link analysis as a correction term, with the confidence interval propagated to the verdict.
+4. Explain. The LLM reads the calibrator's summaries and surfaces what the system has learned in plain language.
+
+## Proposed implementation surface
+
+When this design is acted on, the proposed shape is a `trnp-llm` crate proxying a local Ollama-compatible endpoint, an `/api/v1/ai/query` endpoint, the existing endpoints exposed as a tool-call schema, and a chat panel in the frontend that renders tool calls as collapsible cards citing the structured result. Model selection is intended to be runtime-configurable through `TRNP_LLM_BASE_URL` and `TRNP_LLM_MODEL` environment variables.
+
+> Authentication must land before any LLM endpoint is exposed beyond localhost. The current API has none.

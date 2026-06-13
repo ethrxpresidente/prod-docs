@@ -1,0 +1,97 @@
+---
+title: Getting started
+slug: getting-started
+product: RAIDR
+version: v0.1.0
+order: 20
+eyebrow: GET STARTED
+description: Build and run the RAIDR server, optionally build the WASM physics bundle, and open the frontend.
+---
+
+# Getting started
+
+This page takes you from a clean checkout to a running RAIDR instance serving the frontend on `127.0.0.1:8787`.
+
+## Prerequisites
+
+- Rust stable, version `1.75` or newer. The workspace pins the toolchain via `rust-toolchain.toml`, which also installs `rustfmt`, `clippy`, and the `wasm32-unknown-unknown` target.
+- For the optional WASM bundle: `wasm-pack`, installed with `cargo install wasm-pack --locked`.
+- A Cesium Ion token is optional. Without one the frontend renders, but real world terrain and Bing Aerial imagery require a token entered at runtime.
+
+## Run the server
+
+Build and run the server in release mode. The server also serves the frontend from the same port.
+
+```bash
+cargo run -p trnp-server --release
+```
+
+On start the server binds `127.0.0.1:8787`, opens or creates its SQLite database, runs migrations, and begins serving the REST API under `/api/v1` together with the static frontend.
+
+Open the application in a browser.
+
+```
+http://127.0.0.1:8787
+```
+
+## Build the WASM physics bundle (optional)
+
+The frontend computes link math locally when the WASM bundle is present, and falls back to the server API when it is not. Building the bundle is not part of the default run.
+
+```bash
+pwsh scripts/build-wasm.ps1   # Windows / PowerShell
+# or
+scripts/build-wasm.sh         # Unix
+```
+
+The script invokes `wasm-pack build --target web --release` and writes the artifact into `frontend/wasm/`:
+
+```
+frontend/wasm/trnp_wasm.js          ES-module loader
+frontend/wasm/trnp_wasm_bg.wasm     compiled module
+frontend/wasm/trnp_wasm.d.ts        TypeScript types
+```
+
+The release profile plus `wasm-opt` produces a payload of roughly 25–40 KB gzipped. If `wasm-pack` is not installed the script prints the install command and exits without building.
+
+## Enable terrain
+
+Without terrain data RAIDR treats elevation as `0 m` everywhere — links compute, but over a flat sea-level earth. To plan against real terrain, point the server at a directory of SRTM `.hgt` tiles.
+
+```bash
+export TRNP_SRTM_DIR=/data/srtm
+```
+
+Tiles are named by their south-west corner, for example `N40W075.hgt` covers `40–41°N`, `74–75°W`. RAIDR memory-maps each tile on first use. See [Geo and terrain](geo-and-terrain) for the tile format and sampling behaviour.
+
+For accurate MSL-to-HAE reconciliation, also supply an EGM96 geoid grid.
+
+```bash
+export TRNP_GEOID=/data/egm96.bin
+```
+
+Without a geoid grid, undulation is treated as `0 m` and SRTM MSL elevations are used directly as ellipsoidal heights.
+
+## Verify the instance
+
+Two endpoints report health.
+
+```bash
+curl http://127.0.0.1:8787/healthz
+curl http://127.0.0.1:8787/readyz
+```
+
+`healthz` returns service status, name, and version. `readyz` additionally checks that the database is reachable and the terrain provider responds. Use `readyz` as the readiness probe behind a load balancer or orchestrator.
+
+## First link
+
+Create a deployment, add two nodes, and analyse the link between them. The frontend drives this flow, or you can call the API directly — see [Server and API](server-api) for request shapes.
+
+```bash
+# Create a deployment
+curl -s -X POST http://127.0.0.1:8787/api/v1/deployments \
+  -H 'content-type: application/json' \
+  -d '{"name":"demo"}'
+```
+
+The response carries the deployment `id`. Use it to create nodes under `/api/v1/deployments/:id/nodes`, then post the two node ids to `/api/v1/links/analyze`.

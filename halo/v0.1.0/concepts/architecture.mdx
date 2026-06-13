@@ -1,0 +1,79 @@
+---
+title: Concepts and architecture
+slug: concepts/architecture
+product: HALO
+version: v0.1.0
+order: 30
+eyebrow: CONCEPTS
+description: How the HALO dashboard, ubus, the mesh routing stack, and the supporting daemons compose into an OpenMANET mesh node.
+---
+
+# Concepts and architecture
+
+HALO is an application and package layer on top of OpenWrt. A node is an OpenWrt device with a Morse Micro HaLow radio, the batman-adv mesh routing stack, the supporting daemons, and the HALO dashboard. This page describes the moving parts and how data flows between them.
+
+## The node
+
+Each mesh node runs OpenWrt with the OpenMANET package set. The reference node is a Raspberry Pi BCM2711 with a Morse Micro MM6108A1 radio over SDIO, running OpenMANET `24.10`. The HaLow radio operates in the sub-gigahertz S1G band — for example channel `44` at `924 MHz` with `8 MHz` bandwidth — using 802.11s mesh mode.
+
+A node holds a role in the mesh, surfaced through the `morse-mode` ubus object:
+
+- `mesh-gate` — an 802.11s mesh gate that bridges the mesh to a wired network.
+- `mesh-point` — an 802.11s mesh peer.
+- `ap` — access point mode.
+- `sta` — station (client) mode.
+
+## Layers
+
+The stack has four layers, from radio up to operator.
+
+### Radio and link
+
+The Morse Micro HaLow driver (`kmod-morse`) drives the MM6108-class chipset over SDIO, SPI, or USB. Board support packages provide firmware, BCF selection, default channel, and SAE mesh fixes per platform. The radio forms an 802.11s mesh; `mesh11sd` applies mesh parameters dynamically so settings take effect without restarting the wireless network.
+
+### Routing
+
+`batman-adv` (BATMAN_V) provides layer-2 multi-hop routing across the mesh. Mesh radios are enslaved to a `bat0` soft interface as `batadv_hardif` ports. batman-adv maintains an originator table of all reachable nodes and a neighbor table of one-hop peers; these are the source of the topology shown in the dashboard.
+
+### Mesh services
+
+`alfred` distributes arbitrary local facts — hostnames, gateway, node, and position records — across the mesh over IPv6 link-local multicast, with no configuration. `openmanetd` is the OpenMANET manager: it consumes GNSS, drives `alfred` data exchange, and provides a multicast push-to-talk voice path. `gpsd` feeds position from a GNSS receiver.
+
+### Operations
+
+The HALO dashboard and LuCI both run under `uhttpd`. The dashboard is the primary operations surface; LuCI remains available for advanced configuration through the dashboard's `Advanced Config` link.
+
+## Data flow to the dashboard
+
+The dashboard is a static SPA. Every piece of device data it shows flows through the `ubus` JSON-RPC interface served by `uhttpd`.
+
+```
+OpenWrt device (ubusd)
+        |
+   POST /ubus  (JSON-RPC 2.0)
+        |
+   src/lib/ubus.ts          typed RPC client + convenience wrappers
+        |
+   src/hooks/useUbus.ts     React hooks with polling
+        |
+   page components -> dashboard primitives
+```
+
+A single client (`ubusCall`) dispatches every request as a JSON-RPC `call` with the session ID, ubus path, method, and params. Typed convenience wrappers cover `system.board`, `system.info`, `network.interface.dump`, `iwinfo.info`, `iwinfo.assoclist`, `morse-mode.query`, `firewall.zones`, `firewall.forwardings`, `dhcp.leases`, `batadv.originators`, and `batadv.neighbors`. React hooks wrap these calls and poll at intervals tuned for embedded devices — system info every `5s`, interfaces and mesh every `10s`, DHCP leases every `15s`.
+
+## Mock and live modes
+
+The dashboard runs in one of two modes, selected by the `VITE_USE_DEVICE` environment variable.
+
+| Mode | Condition | Behavior |
+|------|-----------|----------|
+| Mock | `VITE_USE_DEVICE` unset | Returns deterministic mock data with a simulated delay |
+| Live | `VITE_USE_DEVICE=true` | POSTs to `/ubus` on the device |
+
+Mock data mirrors real device output captured from a BCM2711 / MM6108A1 / OpenMANET `24.10` node, so the UI is fully exercisable offline. In production the built SPA lives at `/www/dashboard/` and `uhttpd` serves `/ubus` natively — no proxy is needed.
+
+## Where to go next
+
+- [Mesh and routing](subsystems/mesh-and-routing) covers HaLow, batman-adv, alfred, and mesh11sd.
+- [The dashboard](subsystems/dashboard) covers the SPA, its pages, and the ubus client.
+- [openmanetd](subsystems/openmanetd) covers the manager daemon.

@@ -1,0 +1,109 @@
+---
+title: Core concepts and architecture
+slug: concepts
+product: CHAOS
+version: v0.1.0
+order: 30
+eyebrow: CONCEPTS
+description: The CHAOS domain model — directions, the impairment composite, the qdisc stack, applied-state read-back, and the daemon architecture.
+---
+
+# Core concepts and architecture
+
+CHAOS is built around a small set of domain types shared across the API, the CLI, and the data-plane backend. These types are the canonical wire shape: the same structures flow through the HTTP API and the CLI. Understanding them is enough to operate the appliance and to read its output.
+
+## Architecture
+
+A single daemon, `chaosd`, owns all state. It serves the HTTP/JSON API over a Unix domain socket and programs the data plane through the kernel netlink interface.
+
+```
+┌──────────────────────────────────────────────────────┐
+│ Operator                                             │
+│   chaos CLI ──▶ HTTP/1.1 over Unix socket            │
+│   automation ──▶ HTTP/JSON API                       │
+└──────────────────────────────────────────────────────┘
+                        │
+┌──────────────────────────────────────────────────────┐
+│ Appliance                                            │
+│   chaosd                                             │
+│    ├── chaos-api  (axum HTTP surface, OpenAPI)       │
+│    └── chaos-tc   (rtnetlink TcBackend)              │
+│              │                                       │
+│   ┌──────────▼──────────┐                            │
+│   │ Data plane:         │                            │
+│   │  transparent bridge │                            │
+│   │  tbf → netem → pfifo│  per-port egress           │
+│   └─────────────────────┘                            │
+└──────────────────────────────────────────────────────┘
+```
+
+The API router is generic over the backend (`Arc<B: TcBackend>`) and dispatched statically. `chaosd` constructs the real `rtnetlink` backend at startup and serves the API; tests run the same router against an in-memory mock backend.
+
+## Direction
+
+A `Direction` identifies which physical data port an impairment applies to: `port1` or `port2`. The appliance is a transparent bridge between the two; impairments are programmed on the egress qdisc of each port independently. The binding from a direction to a concrete interface lives in `chaosd` configuration, and `chaosd` enforces the BDF ordering at startup so `Port1` and `Port2` are stable across appliances.
+
+## Impairment
+
+An `Impairment` is the complete impairment state of a single direction. It is a composite of independent optional fields, not a single-choice enum, because the kinds coexist:
+
+| Field | Kind | Backed by |
+|---|---|---|
+| `latency` | Constant or stochastic delay | `netem` |
+| `loss` | Bernoulli or Gilbert-Elliott | `netem` |
+| `duplication` | Packet duplication | `netem` |
+| `reordering` | Packet reordering with gap | `netem` |
+| `corruption` | Bit corruption | `netem` |
+| `rate` | Token-bucket rate ceiling | `tbf` |
+| `queue` | Bounded queue limit | `pfifo` |
+
+An `Impairment` with every field unset is the cleared state. It serializes to `{}` and is the response from a clear operation.
+
+## The qdisc stack
+
+The composite maps directly onto a composed egress qdisc stack:
+
+```
+root: tbf       (rate limit + burst)
+   └── netem    (delay / jitter / loss / dup / reorder / corrupt)
+         └── pfifo  (bounded queue)
+```
+
+The stack is rooted at the lowest configured layer. If `rate` is set, `tbf` is the root with `netem` as its child. If `rate` is not set, `netem` is the root directly — no synthetic unlimited `tbf` is inserted, so a latency-only impairment never adds token-bucket buffering that would perturb the baseline latency.
+
+## Applied state and divergence
+
+Every mutating data-plane operation — apply, clear — and every read returns an `AppliedState`: the post-operation read-back of what the kernel actually holds, not what was requested. This is deliberate. The reported state is truth, so any consumer records reality rather than intent.
+
+When the kernel applies exactly what was requested, the `divergence` list is empty and is omitted from the serialized form. It is populated when:
+
+- the kernel snapped a value to its native granularity (`kernel-rounded`),
+- the kernel rejected a value and the backend retried with a related configuration (`kernel-rejected`),
+- the backend does not implement a parameter, such as Gilbert-Elliott loss in this release (`unsupported-by-backend`),
+- a read found a foreign qdisc occupying the port that CHAOS did not install (`foreign-state`).
+
+Each divergence names the field, the requested value, the applied value, and the reason. `AppliedState` also carries a monotonic timestamp (the ordering source of truth) and a wall-clock timestamp (for human correlation only).
+
+## Apply is aggressive, clear is conservative
+
+Apply takes ownership of the port unconditionally — it programs the requested stack regardless of what was there. Clear removes only chaos-managed qdiscs. A foreign qdisc — one CHAOS did not install and that is not a kernel default — is left in place and surfaced as a `foreign-state` divergence rather than silently removed. The kernel-default qdiscs treated as already-cleared are `pfifo_fast`, `mq`, `mq_prio`, and `noqueue`. Notably `fq_codel` is not on that list: its presence at root is a deliberate operator choice that surfaces as a divergence.
+
+## Capabilities
+
+`BackendCapabilities` is a static report of what the data-plane backend supports — per-impairment-kind flags, the list of supported distributions, and a backend name and version. Callers gate on capability before constructing a state that would only fail at apply time. The capability report advertises only what the backend actually executes; it does not pre-claim unimplemented features.
+
+## Wire-shape conventions
+
+The domain types follow fixed encoding rules so sealed output is archival-stable:
+
+- `Duration` values (latency, jitter) are `u64` nanoseconds.
+- Wall-clock timestamps are `i64` nanoseconds since the UNIX epoch.
+- Tagged enums use a discriminator field (`kind`, `model`, `unit`) with kebab-case values.
+- Bounded numeric types — percentages, correlation, probability — validate on deserialize, so an out-of-range value fails at parse time.
+- Wire structs reject unknown fields, so a typo in a scenario or API body fails loudly.
+
+## Next steps
+
+- [The impairment surface](impairments) — every impairment kind and its parameters.
+- [Traffic control and the data plane](traffic-control) — how the backend programs and reads the qdisc stack.
+- [The HTTP API](api) — the endpoints that expose these types.

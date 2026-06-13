@@ -1,0 +1,78 @@
+---
+title: Concepts and architecture
+slug: concepts
+product: RAIDR
+version: v0.1.0
+order: 30
+eyebrow: CONCEPTS
+description: The core domain model — deployments, nodes, links, coverage — and how the RAIDR crates compose into a request lifecycle.
+---
+
+# Concepts and architecture
+
+RAIDR organises around a small domain model and a clean separation between deterministic physics and stateful orchestration. This page covers the entities you work with and the path a request takes through the system.
+
+## Domain model
+
+### Deployment
+
+A deployment is the top-level container for a planning scenario. It has a name, optional center coordinates, and an optional rectangular region of interest. Nodes belong to a deployment, and a deployment is the unit the protocol advisor analyses.
+
+### Node
+
+A node is a radio at a position. It carries:
+
+- A position: `lat`, `lon`, and `height_agl_m` (height above ground level).
+- A `role`: one of command, relay, team, sensor, or asset. Roles are labels with associated colors in the UI.
+- A `radio` configuration: frequency, bandwidth, transmit power, cable losses, antenna gains, receiver noise figure, polarization, climate zone, atmospheric profile, rain rate, target availability, and an optional target data rate.
+- A `pointing` configuration: antenna azimuth and elevation in degrees.
+
+Height is stored above ground level. The terrain subsystem resolves it to MSL and then to ellipsoidal height (HAE) at analysis time.
+
+### Link
+
+A link is not a stored entity — it is the result of analysing the path between two nodes. Analysis samples the terrain profile along the geodesic between the endpoints, runs the full link budget, and returns a `LinkResult` with every loss term, the SNR, the achievable rate, and a closure verdict.
+
+### Coverage
+
+Coverage is an asynchronous job. Given a source node, a radius, a grid resolution, and a receiver height, RAIDR evaluates a full link from the source to a receiver placed at every grid cell, and streams each result as it computes.
+
+### Template and preset
+
+A node template is a saved, reusable node configuration. Presets are read-only catalogs of radios, antennas, roles, and modulations that seed new node configurations. See [Configuration and operations](configuration).
+
+## Crate architecture
+
+The workspace separates concerns into five crates.
+
+| Crate | Responsibility |
+|-------|----------------|
+| `trnp-geo` | WGS84 ellipsoid, Vincenty geodesics, ECEF/ENU transforms, EGM96 geoid undulation |
+| `trnp-physics` | Pure ITU-R propagation routines and the link budget analyzer |
+| `trnp-terrain` | SRTM HGT elevation provider and geodesic profile sampling |
+| `trnp-server` | axum REST + SSE, SQLite persistence, coverage and routing orchestration |
+| `trnp-wasm` | `wasm-bindgen` wrappers exposing the physics surface to the browser |
+
+The dependency direction is strict. `trnp-physics` and `trnp-geo` have no knowledge of the server, the database, or terrain sources. `trnp-terrain` depends on `trnp-geo` for geodesics and the geoid. `trnp-server` composes all of them. `trnp-wasm` re-exports `trnp-physics` and `trnp-geo` to the browser.
+
+## The pure core
+
+The physics and geodesy crates are pure: functions on plain structs, no global state, no I/O. This is what makes results identical across native and `wasm32` builds, and what makes the property tests meaningful.
+
+The test suite covers monotonicity, the FSPL +6 dB/octave relationship, Vincenty round-trips, ECEF-to-geodetic round-trips at terrestrial heights, P.526 closed-form limits, P.530 climate ordering, and the rain horizontal-over-vertical relationship at X-band.
+
+## Request lifecycle: a link analysis
+
+A `POST /api/v1/links/analyze` request flows through every layer.
+
+1. The server loads both nodes from SQLite and reads their stored radio and pointing configurations.
+2. `trnp-terrain` samples the WGS84 geodesic between the two coordinates, querying SRTM for MSL elevation at each sample and the EGM96 geoid for undulation, producing a profile in ellipsoidal height.
+3. The server applies earth-bulge correction to the profile using the default refraction factor, builds `LinkParams` from the transmit node's radio config, and derives antenna pointing toward the path.
+4. `trnp-physics::analyze_link` runs the budget: FSPL, diffraction, atmospheric, rain, fade margin, antenna gains, EIRP, receive power, noise floor, SNR, modulation selection, and the verdict.
+5. The server returns the sampled profile and the `LinkResult` as JSON.
+
+The same `analyze_link` function runs in the browser via `trnp-wasm` when a user drags a node, avoiding a server round-trip on the interactive hot path. Heavy compute — coverage, relay planning, mesh routing — stays on the server.
+
+## State and concurrency
+
+The server holds shared application state: the SQLite pool, the terrain and geoid providers, and a registry of in-flight coverage jobs. Coverage runs in a background `tokio` task and publishes progress over a broadcast channel that SSE subscribers consume. Completed jobs are evicted from the registry after ten minutes to bound memory.

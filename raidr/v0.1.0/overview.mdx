@@ -1,0 +1,62 @@
+---
+title: RAIDR overview
+slug: overview
+product: RAIDR
+version: v0.1.0
+order: 10
+eyebrow: INTRODUCTION
+description: RAIDR is an API-first 3D mission-planning platform for tactical radio networks with ITU-R-grade propagation physics.
+---
+
+# RAIDR overview
+
+RAIDR is an API-first 3D mission-planning platform for tactical radio networks. It computes link budgets, terrain-aware coverage, multi-hop relay chains, and mesh routing over real terrain using deterministic, ITU-R-grade propagation physics.
+
+The engine is pure and tested. Every number a planner sees traces to a closed-form ITU-R recommendation evaluated on WGS84 geodesy and SRTM terrain — not an estimate, not a model fit. The same physics code compiles to native and to `wasm32`, so the server and the browser produce identical results.
+
+## What RAIDR computes
+
+- Point-to-point link budgets: free-space path loss, knife-edge and multi-edge diffraction, gaseous absorption, rain attenuation, multipath fade margin, antenna gain in the realised path direction, noise floor, SNR, achievable rate, and a closure verdict.
+- Terrain profiles between two coordinates, sampled along the WGS84 geodesic with MSL and HAE elevation at each point.
+- Area coverage: a grid of receivers around a source node, each evaluated as a full link, streamed to the client as it computes.
+- Multi-hop relay planning: greedy geodesic-aligned relay placement to meet a target data rate.
+- Mesh routing: Dijkstra shortest-path over a deployment graph with ETT, ETX, bottleneck, or hop-count metrics.
+- Protocol recommendation: a scored ranking of mesh routing protocols against a deployment's measured link characteristics.
+
+## Architecture at a glance
+
+RAIDR is a Rust workspace of five crates plus a vanilla-JavaScript frontend.
+
+```
+raidr/
+├── crates/
+│   ├── trnp-geo/      WGS84, Vincenty geodesics, ECEF/ENU, EGM96 geoid
+│   ├── trnp-physics/  FSPL · P.526 diffraction · P.676 atmospheric
+│   │                  P.838 rain · P.530 fade · antennas · modulation
+│   ├── trnp-terrain/  SRTM HGT mmap provider + geodesic profile sampling
+│   ├── trnp-server/   axum + sqlx(SQLite) REST + SSE on :8787
+│   └── trnp-wasm/     wasm-bindgen wrappers for browser-side analysis
+└── frontend/          Cesium 1.118 · vanilla JS · no build step
+```
+
+> The internal codename for the workspace and its crates is `trnp` (terrain radio network planner). The crate prefix `trnp-` and the `TRNP_` environment variables reflect that codename. The product is RAIDR.
+
+## Design principles
+
+RAIDR holds to a few constraints that shape the whole system.
+
+- Determinism. Physics routines are pure functions on plain structs. No global state, no allocator on the hot path. Given identical inputs they return identical outputs on every platform.
+- One physics implementation. `trnp-physics` compiles twice — native for the server, `wasm32` for the browser — so client-side link math during node drag matches the server byte for byte.
+- API first. Every capability is a REST endpoint under `/api/v1`. The frontend is one client of that API; any client can drive RAIDR.
+- Traceable values. Each loss and margin term maps to a named ITU-R recommendation, documented in source alongside its simplifying assumptions.
+
+## Where to go next
+
+- [Getting started](getting-started) — build the server, run it, and open the frontend.
+- [Concepts and architecture](concepts) — deployments, nodes, the request lifecycle, and how the crates fit together.
+- [Propagation physics](physics-engine) — the link budget and the ITU-R recommendations behind each term.
+- [Geo and terrain](geo-and-terrain) — WGS84 geodesy, the EGM96 geoid, and SRTM elevation.
+- [Server and API](server-api) — endpoints, coverage streaming, and error format.
+- [Frontend and WASM client](frontend-client) — the Cesium scene and in-browser physics.
+- [LLM integration](llm-integration) — the proposed natural-language orchestration layer.
+- [Configuration and operations](configuration) — environment variables, presets, and operating the server.

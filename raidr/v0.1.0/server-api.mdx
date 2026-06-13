@@ -1,0 +1,158 @@
+---
+title: Server and API
+slug: server-api
+product: RAIDR
+version: v0.1.0
+order: 60
+eyebrow: API
+description: The RAIDR REST API under /api/v1 — deployments, nodes, links, coverage streaming, relay planning, mesh routing, and the error format.
+---
+
+# Server and API
+
+`trnp-server` exposes RAIDR over a REST + JSON API built on axum and backed by SQLite via sqlx. It also serves the static frontend from the same port. The default bind address is `127.0.0.1:8787`.
+
+## Conventions
+
+- All resource endpoints live under `/api/v1`.
+- Request and response bodies are JSON.
+- Errors are RFC 7807 Problem+JSON.
+- Coverage progress streams over Server-Sent Events.
+- Health endpoints `/healthz` and `/readyz` sit outside the versioned prefix.
+
+CORS is permissive — any origin, the standard methods, and all headers. Responses are compressed. Static frontend files are served with no-cache headers so edits appear without a hard refresh.
+
+## Endpoints
+
+### Deployments
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/v1/deployments` | List deployments |
+| `POST` | `/api/v1/deployments` | Create a deployment (`201`) |
+| `GET` | `/api/v1/deployments/:id` | Fetch one |
+| `PATCH` | `/api/v1/deployments/:id` | Update name, center, or region |
+| `DELETE` | `/api/v1/deployments/:id` | Delete (`204`) |
+
+Updating a region requires `clear_region: true` to remove it, since a null region is otherwise indistinguishable from "leave unchanged".
+
+### Nodes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/v1/deployments/:id/nodes` | List nodes in a deployment |
+| `POST` | `/api/v1/deployments/:id/nodes` | Create a node (`201`) |
+| `GET` | `/api/v1/nodes/:id` | Fetch one |
+| `PATCH` | `/api/v1/nodes/:id` | Update name, role, height, radio, or pointing |
+| `PUT` | `/api/v1/nodes/:id/position` | Move only — `lat`, `lon`, optional height |
+| `DELETE` | `/api/v1/nodes/:id` | Delete (`204`) |
+
+### Link analysis
+
+`POST /api/v1/links/analyze` analyses the path between two nodes.
+
+```json
+{ "tx_node_id": "<uuid>", "rx_node_id": "<uuid>", "samples": 256 }
+```
+
+`samples` is clamped to `[8, 4096]` and defaults to 256. The response carries the sampled terrain profile and the full `LinkResult` — every loss term, SNR, achievable rate, selected modulation, and verdict.
+
+### Terrain profile
+
+`POST /api/v1/terrain/profile` samples the geodesic between two coordinates.
+
+```json
+{ "from": {"lat": 40.1, "lon": -74.9}, "to": {"lat": 40.4, "lon": -74.5}, "samples": 256 }
+```
+
+`samples` is clamped to `[2, 4096]`. The response returns total distance, forward azimuth, and per-sample `lat`, `lon`, distance, MSL elevation, and HAE elevation.
+
+### Relay planning
+
+`POST /api/v1/relay/plan` places relays along the geodesic to meet a target data rate.
+
+```json
+{
+  "tx_node_id": "<uuid>",
+  "rx_node_id": "<uuid>",
+  "target_data_rate_bps": 2000000,
+  "relay_height_agl_m": 5,
+  "max_hops": 10
+}
+```
+
+The planner greedily walks from the transmitter toward the receiver, placing each relay at the farthest tested fraction of the remaining distance that still closes for the target rate, until the receiver is in reach or `max_hops` is exceeded. It returns the hop chain, per-segment link results, the end-to-end bottleneck rate, and the relay radio and pointing config to commit matching nodes.
+
+### Mesh routing
+
+`POST /api/v1/mesh/route` finds the best path between two nodes over the deployment graph with Dijkstra.
+
+```json
+{ "src_node_id": "<uuid>", "dst_node_id": "<uuid>", "metric": "ett", "target_data_rate_bps": 1000000 }
+```
+
+The metric is one of `ett` (expected transmission time, the default), `etx` (expected transmissions), `bottleneck` (widest path), or `hops`. When a target rate is set, edges below it are excluded; if no target-meeting path exists, a best-effort path is returned with `meets_target: false`. The response includes the path, per-segment results with PER and ETX, and a summary with bottleneck rate and single- and multi-radio throughput estimates.
+
+### Protocol advisor
+
+`POST /api/v1/mesh/recommend-protocol` scores mesh routing protocols against a deployment's measured link characteristics.
+
+```json
+{ "deployment_id": "<uuid>" }
+```
+
+It samples all node pairs, summarises feasibility, SNR, rate, and PER, then returns a ranked list of protocols — among them BATMAN-adv, Babel, OLSRv2, HWMP/802.11s, AODV, and static routing — each with a score, overhead and convergence classes, reasons, and tradeoffs.
+
+### Presets and templates
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/v1/presets/radios` | Radio presets |
+| `GET` | `/api/v1/presets/antennas` | Antenna presets |
+| `GET` | `/api/v1/presets/roles` | Role presets with colors |
+| `GET` | `/api/v1/presets/modulations` | Modulation table |
+| `GET` | `/api/v1/templates` | List node templates |
+| `POST` | `/api/v1/templates` | Create a template |
+| `DELETE` | `/api/v1/templates/:id` | Delete a template |
+
+See [Configuration and operations](configuration) for preset contents.
+
+## Coverage streaming
+
+Coverage is asynchronous. Start a job, then subscribe to its event stream.
+
+```json
+POST /api/v1/coverage
+{ "source_node_id": "<uuid>", "radius_km": 10, "resolution": 64, "rx_height_agl_m": 2 }
+```
+
+`resolution` is clamped to `[4, 256]` and `radius_km` to `(0, 500]`. The response returns a `job_id`. A snapshot of the grid is available at `GET /api/v1/coverage/:id`. The live stream is at `GET /api/v1/coverage/:id/stream`.
+
+The server builds a square grid centred on the source, evaluates a full link to a receiver at each cell, and emits SSE events as it goes.
+
+| Event | Payload |
+|-------|---------|
+| `started` | grid `rows`, `cols` |
+| `tile` | `row`, `col`, `lat`, `lon`, `rx_power_dbm`, `verdict` |
+| `row_done` | `row` |
+| `done` | empty |
+| `failed` | `detail` |
+
+A keep-alive heartbeat is sent every 15 seconds. Completed jobs are evicted from the registry ten minutes after they finish.
+
+## Error format
+
+Errors are RFC 7807 Problem+JSON.
+
+```json
+{
+  "type": "about:blank",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "deployment not found"
+}
+```
+
+`400` covers bad requests, `404` not found, `409` conflicts (for example a duplicate template name), and `500` internal and database errors. Client errors are logged at debug, server errors at error level.
+
+> The current API has no authentication. Bind it to localhost, or place it behind an authenticating reverse proxy before exposing it beyond the host.
