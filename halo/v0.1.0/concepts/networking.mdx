@@ -1,0 +1,74 @@
+---
+title: Networking
+slug: concepts/networking
+product: HALO
+version: v0.1.0
+order: 40
+eyebrow: CONCEPTS
+description: HALO's two-layer encrypted mesh — 802.11ah HaLow radio, batman-adv Layer 2 underlay, and an auto-keyed WireGuard overlay.
+---
+
+# Networking
+
+HALO runs a two-layer encrypted mesh. A `batman-adv` Layer 2 underlay carries mesh traffic over HaLow radio; an auto-keyed WireGuard overlay carries all control-plane traffic on top of it. Nodes self-address and self-heal — adding a node requires no configuration on the node or the gateway.
+
+## The stack
+
+```text
+APPLICATION:  http://10.42.0.1:8080   WireGuard overlay IP — stable
+OVERLAY:      wg0 — WireGuard tunnel (Curve25519 + ChaCha20-Poly1305)
+UNDERLAY:     batman-adv bat0 (10.41.0.0/24, DHCP from gateway)
+              over 802.11s mesh on wlan0
+TRANSPORT:    wlan0 HaLow 920 MHz | eth0 wired | wlan1 USB WiFi
+```
+
+All agent-to-gateway traffic uses the encrypted overlay at `10.42.0.1`. The application reaches the gateway at a stable overlay address regardless of which physical transport a node is using.
+
+## HaLow radio
+
+HALO operates on 802.11ah HaLow in the sub-GHz ISM band (around 900 MHz), achieving multi-kilometer range at low power. The reference radio is a Morse Micro MM6108-class chipset driven by the `morse_sdio` kernel module. The radio integration runs on standard Linux with off-the-shelf hardware, but the peering and driver-recovery logic that makes it reliable is specific to current chipset firmware behavior.
+
+Two operational details are load-bearing and must not be disturbed:
+
+- The Morse driver is blacklisted from auto-load. The mesh script loads it with a 5-second SDIO delay to avoid a probe race. Never remove or modify this blacklist.
+- Mesh peering uses `no_auto_peer=1` with manual `mesh_peer_add`, working around a firmware-level link-ID race in `wpa_supplicant`'s user-space MPM. A custom `wpa_supplicant` built with `CONFIG_MESH=y CONFIG_SAE=y` lives at `/usr/local/sbin/wpa_supplicant`; the system package lacks mesh support.
+
+```bash
+wpa_cli -i wlan0 scan
+# wait 5-8s
+wpa_cli -i wlan0 mesh_peer_add <MAC>   # for each [MESH] result
+```
+
+> `iw` proxy width does not reliably indicate S1G bandwidth — both 1 MHz and 4 MHz map to `80 MHz` in `iw dev radio0 info`. The source of truth is `sudo cat /sys/kernel/debug/ieee80211/phy1/morse/mesh_stats`. Morse debug files live under `phy1`, not `phy0`, when a USB WiFi dongle is present.
+
+## Underlay — batman-adv
+
+Layer 2 multi-hop routing uses `batman-adv` (`BATMAN_V`) over an `802.11s` mesh on `wlan0`, exposed as `bat0`. The gateway runs DHCP on the underlay and assigns each node an address on `10.41.0.0/24`. `batman-adv` discovers new originators through the routing protocol and the gateway creates an inventory entry before a node's agent sends its first heartbeat. Originator and neighbor tables are visible through the API and `haloctl`.
+
+## Overlay — WireGuard
+
+All agent-to-gateway communication runs over an encrypted WireGuard overlay on `wg0`, using Curve25519 key exchange and ChaCha20-Poly1305. The overlay is auto-keyed — there is no manual key distribution.
+
+```text
+POST /v1/mesh/wg-register
+{ "public_key": "...", "node_id": "halo-n1", "endpoint": "10.41.0.17:51820" }
+
+→ { "assigned_ip": "10.42.0.2",
+    "gateway_public_key": "...",
+    "gateway_endpoint": "10.41.0.1:51820",
+    "network": "10.42.0.0/24" }
+```
+
+A node calls `wg-register` on first boot before it has any credentials. The gateway assigns an overlay IP, adds the peer, and returns its own public key and endpoint. Background maintenance loops handle re-registration after restarts. WireGuard is the only overlay — there is no VXLAN.
+
+## Reboot recovery
+
+The mesh re-establishes from cold boot without intervention. WireGuard connectivity is typically restored around 1:32 and full mesh reachability under 2:44 from a simultaneous full-network reboot. Stale peers are evicted, addresses are re-acquired via DHCP, and overlay tunnels re-key automatically.
+
+> Some log lines report bandwidth as `4MHz` for all frequencies and derive it from the proxy frequency mapping. This is cosmetic. Actual bandwidth is recorded in `/var/lib/halo/rf-config.json`.
+
+## Where to go next
+
+- See the binaries that drive this stack in [architecture](concepts/architecture).
+- Inspect live mesh state with the [haloctl CLI](reference/haloctl).
+- Query topology and peers through the [gateway API](reference/api).

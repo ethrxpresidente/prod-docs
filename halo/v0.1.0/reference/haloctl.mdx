@@ -1,0 +1,112 @@
+---
+title: haloctl CLI
+slug: reference/haloctl
+product: HALO
+version: v0.1.0
+order: 100
+eyebrow: REFERENCE
+description: haloctl is the command-line tool for HALO nodes — status, health checks, hardware detection, sensor reads, and node provisioning.
+---
+
+# haloctl CLI
+
+`haloctl` is the command-line administration tool for HALO nodes. It runs directly on gateway and node devices for diagnostics, provisioning, and hardware inspection. The binary is installed at `/usr/local/bin/haloctl`.
+
+## Quick reference
+
+```bash
+haloctl status            # full node status dashboard
+haloctl gateway-health    # gateway health checks (PASS/FAIL)
+haloctl gateway-peers     # list all nodes from the gateway API
+haloctl remote-diag       # remote node connectivity diagnostics
+haloctl modules           # detect attached hardware modules
+haloctl local ups         # read UPS/battery sensor
+haloctl local gps         # read GPS position
+haloctl local i2c scan    # scan I2C buses for sensors
+haloctl local gpio        # show GPIO pin inventory
+haloctl setup             # interactive first-time setup wizard
+haloctl show              # display current configuration
+haloctl validate          # validate system state against config
+haloctl join              # join a HALO mesh (node provisioning)
+haloctl register          # register node with gateway
+haloctl admin             # admin operations (list/approve registrations)
+haloctl apply-services    # apply service configuration
+haloctl display           # manage attached displays
+```
+
+## Diagnostics
+
+### `haloctl status`
+
+The primary diagnostic command. Shows a compact dashboard of the node's full connectivity state: mesh interface type, channel, peer count, plink state, and signal; `batman-adv` originator count and gateway mode; `bat0` and `wg0` addresses; WireGuard peer count and handshake recency; `systemd` service states; gateway API health; and internet reachability.
+
+### `haloctl gateway-health [--config <path>]`
+
+Runs PASS/FAIL health checks on a gateway: service states, `wlan0` mesh point mode, peer count, `bat0` and `wg0` addressing, WireGuard handshake, `dnsmasq`, the gateway `/health` endpoint, upstream IPv4, and internet ping. Exits with code `1` if any check fails — suitable for automated monitoring.
+
+### `haloctl gateway-peers`
+
+Lists all nodes known to the gateway API with each node's IP, last-seen time, and reachability. Reads API credentials from `/etc/halo/agent-env`, falling back to `admin` / `ethrx`.
+
+### `haloctl remote-diag [--config <path>] [--gateway-ip <ip>]`
+
+Runs connectivity diagnostics from a non-gateway node, checking whether it can reach the gateway through the mesh: services, mesh point mode, established peer, underlay and overlay addressing, gateway ping over `wg0`, and the gateway `/health` endpoint.
+
+## Hardware
+
+### `haloctl modules`
+
+Detects and reports attached hardware modules — `gateway_api`, `halo_mesh`, the custom `wpa_supplicant`, `wireguard`, USB GPS, the INA219 UPS HAT, I2C sensors, and V4L2 cameras — with vendor and model.
+
+### `haloctl local ups [--bus <path>] [--addr <hex>]`
+
+Reads the UPS/battery HAT over I2C — voltage, current, power, battery percent, and charging state. Defaults to `/dev/i2c-1` at `0x43`.
+
+### `haloctl local gps [--samples <n>] [--json]`
+
+Reads GPS position from `gpsd` — fix mode, latitude, longitude, altitude, speed, and satellites. Default 30 samples; `--json` for machine-readable output.
+
+### `haloctl local i2c scan`
+
+Scans the board's I2C buses for sensors and auto-detects them with the template library. Bus health diagnostics flag empty buses, missing pull-up resistors (bus noise), and `WHO_AM_I` mismatches.
+
+### `haloctl local gpio`
+
+Shows the GPIO pin inventory for the current board, merging the board definition's physical pin mapping with live `gpioinfo` state. Pin names are color-coded by function — I2C, SPI, UART, PWM.
+
+## Provisioning
+
+### `haloctl setup [--config <path>]`
+
+Interactive first-time setup. Prompts for node name and ID, role, mesh `SSID`/PSK/country/channel, and credentials, then writes `/etc/halo/config.yaml`.
+
+### `haloctl join [--config <path>] [--api-base <url>]`
+
+Signs a join request with the mesh trust secret and sends it to the gateway, receiving API credentials on success.
+
+### `haloctl register [--api-base <url>] [--node-id <id>]`
+
+Registers the node with the gateway for admin approval, using the node's MAC as identity, and polls for status.
+
+### `haloctl admin list|approve|reject [--api-base <url>]`
+
+Gateway-side administration of registrations — list pending and approved, approve an entry, or reject one.
+
+### `haloctl display list|join|idle|status`
+
+Manages attached display devices, such as a Pi Zero 2W with an e-ink or LCD panel.
+
+## Configuration and exit codes
+
+`haloctl` reads `/etc/halo/config.yaml` by default; override with `--config <path>`. API credentials for `gateway-peers` come from `/etc/halo/agent-env` (`ADMIN_USERNAME`, `ADMIN_PASSWORD`), falling back to `admin` / `ethrx`.
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Command failed — check stderr |
+| `2` | Invalid usage or unknown command |
+
+## Where to go next
+
+- Drive the same data over HTTP with the [gateway API](reference/api).
+- Deploy and manage services in [configuration and operations](configuration).

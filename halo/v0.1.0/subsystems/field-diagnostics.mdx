@@ -1,0 +1,48 @@
+---
+title: Field diagnostics
+slug: subsystems/field-diagnostics
+product: HALO
+version: v0.1.0
+order: 70
+eyebrow: SUBSYSTEMS
+description: HALO Field is a mobile-first diagnostics UI served on remote nodes — connect a phone to a node hotspot for instant mesh, signal, and GPS health.
+---
+
+# Field diagnostics
+
+HALO Field is a mobile-first diagnostics UI for in-field testing. The `halo-field` binary serves it on remote nodes over port `80`. Connect a phone to a node's WiFi hotspot and an instant network health dashboard loads in the browser — no login, designed for quick access in the field.
+
+## What it shows
+
+The dashboard surfaces the state an operator needs to place and align a node:
+
+- Eight-state mesh status.
+- Signal strength with color coding.
+- Gateway latency.
+- GPS position.
+- WireGuard status.
+- System stats — CPU, memory, storage, uptime.
+
+Because it runs locally on the node and serves without authentication, `halo-field` responds even when SSH over the overlay does not. From the gateway, `curl http://10.42.0.2:80/api/diag` is a reliable diagnostic fallback.
+
+## Field test mode
+
+A START/STOP control records a measurement session. While running, the node samples every 5 seconds and writes a CSV row capturing signal, GPS (node-local and gateway), distance, and throughput.
+
+- Distance is computed with the haversine formula. The gateway position is cached on the node, so distance is available offline.
+- CSV files are written to `/var/lib/halo/field-tests/` and persist across reboots.
+
+## Speedtest
+
+The speedtest measures throughput through the WireGuard tunnel: a 2 MB download and a 1 MB upload. This reflects real overlay performance between the node and the gateway, not raw radio link rate.
+
+## GPS
+
+Position comes from `gpsd`. The field UI shows fix mode, latitude, longitude, altitude, speed, and satellites in use. Gateway distance uses the cached gateway position so it works without a live link back to the control plane.
+
+> HALO Field is unauthenticated by design — it is intended for physical access to a node in the field. Treat hotspot range as the trust boundary.
+
+## Where to go next
+
+- Read GPS and power directly from the CLI in [haloctl](reference/haloctl).
+- Understand the overlay the speedtest measures in [networking](concepts/networking).

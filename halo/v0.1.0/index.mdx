@@ -5,46 +5,51 @@ product: HALO
 version: v0.1.0
 order: 10
 eyebrow: OVERVIEW
-description: HALO is the OpenMANET dashboard and package feed for 802.11ah HaLow mesh nodes running OpenWrt with batman-adv routing.
+description: HALO turns commodity ARM hardware into self-organizing HaLow mesh networks with built-in monitoring, automation, and remote control.
 ---
 
 # HALO overview
 
-HALO is the operations layer for OpenMANET mesh networking devices. It pairs a modern web dashboard with the OpenWrt package feed that builds the mesh stack — the HaLow radio driver, batman-adv routing, the `alfred` data-exchange daemon, the `openmanetd` manager, and board support for the supported hardware. Together these produce a self-forming, multi-hop wireless mesh that an operator can monitor and configure from a browser.
+HALO is an infrastructure intelligence platform. It turns commodity ARM hardware into self-organizing mesh networks with built-in monitoring, automation, and control. A deployment is a set of low-cost devices — Raspberry Pi-class nodes — running a compiled Rust control plane, a mesh networking layer, and a sensor collector, all managed from a browser.
 
-The dashboard is a static single-page application served by `uhttpd` directly on the device. It talks to OpenWrt over the `ubus` JSON-RPC interface and renders live system, radio, network, and mesh telemetry. It is built to replace the legacy LuCI interface for day-to-day operation while leaving LuCI reachable for advanced configuration.
+Nodes discover each other over 802.11ah HaLow radio, form authenticated mesh links, auto-assign addresses, and begin reporting telemetry. No per-node network configuration is required. The platform is built for environments where conventional networking does not exist or cannot be relied upon: remote sites, mobile operations, temporary deployments, and distributed sensor networks.
 
-> HALO `v0.1.0` is an early release. The dashboard ships as `openmanet-dashboard` `0.1.0`. Backend integration points are still being wired against real devices — treat on-disk formats and ubus surface as subject to change.
+> HALO `v0.1.0` is an early release. On-disk formats, the API surface, and configuration schemas are still stabilizing against live hardware. Treat them as subject to change.
 
 ## What HALO is
 
-HALO has two halves that ship from the same repository.
+HALO ships as a small set of statically linked Rust binaries, deployed by `systemd`, with no runtime dependencies — no Python, no Node.js, no container runtime on the control path.
 
-The OpenMANET packages feed is an OpenWrt `packages`-style feed. It is layered on top of an OpenWrt buildroot and contributes the build scripts, options, and patches for the mesh applications and kernel modules used by OpenMANET. Packages are installed with `opkg` on a running device or selected into a firmware image with the OpenWrt SDK.
+- **HALO** — the platform.
+- **HALO Portal** — the web admin UI.
+- **HALO Flows** — the event pipeline engine (trigger → condition → action automation).
+- **ethrx** — the parent organization.
 
-The dashboard is a React 18 + TypeScript SPA built with Vite. It is packaged as `openmanet-dashboard` and installed into `/www/dashboard/` on the device, served by `uhttpd` alongside LuCI.
+Each component is a single file under 25 MB. Deployment is a binary push plus a service restart. This matters in bandwidth-constrained and air-gapped environments where update payloads must be small and atomic.
 
 ## Who it is for
 
-HALO targets operators of tactical and field wireless mesh networks built on 802.11ah HaLow radios. The reference hardware is a Morse Micro MM6108-class radio paired with a Raspberry Pi BCM2711, a Gateworks Venice board, or a Morse Micro HaLow Link 2. Operators monitor node health, mesh topology, and radio state, and perform first-line configuration without dropping into the full OpenWrt CLI.
+HALO targets field operators managing deployed mesh networks: tactical comms, remote site monitoring, IoT sensor networks, and edge computing clusters. Technical literacy is assumed — operators work in terms of nodes, meshes, telemetry, hostnames, and IPs.
 
 ## Core capabilities
 
-- A web dashboard for system, network, wireless, security, and diagnostics, served on-device and backed by `ubus`.
-- 802.11s HaLow mesh on Morse Micro radios, with `mesh11sd` for dynamic mesh parameter configuration.
-- Layer-2 multi-hop routing with `batman-adv` (BATMAN_V), monitored through originator and neighbor tables.
-- Decentralized mesh data exchange — hostnames, gateway, node, and position records — over `alfred`.
-- `openmanetd`, the OpenMANET manager, including GNSS handling and a multicast push-to-talk voice path.
-- ADS-B to Cursor-on-Target forwarding for feeding aircraft tracks into a TAK mesh.
-- Board support packages for BCM271x, Venice, and HaLow Link 2 hardware, plus the Morse Micro HaLow driver.
+- Zero-configuration mesh networking over 802.11ah HaLow in the sub-GHz band, with multi-kilometer range at low power.
+- A self-healing radio stack — graduated recovery from peer loss, driver faults, and routing failures without operator intervention. Cold boot to full encrypted reachability is typically under 90 seconds.
+- A two-layer encrypted mesh: `batman-adv` Layer 2 underlay with a WireGuard overlay carrying all control traffic.
+- HALO Flows — a visual pipeline engine for automated responses to network and sensor events.
+- Plug-and-play I2C sensor integration via templates, with nine built-in sensors and TOML-defined custom devices.
+- A canonical device model — every physical device maps to one identity, with interfaces, sensors, and roles modeled as its children.
+- Agent-less monitoring of external systems (Proxmox, Synology, UniFi, HTTP, ping).
+- HALO Field — a mobile-first diagnostics UI served on-device for in-field testing.
 
 ## How HALO is delivered
 
-The mesh stack is delivered as OpenWrt packages built from the feed and either flashed into firmware or installed with `opkg`. The dashboard is built with `npm run build` and deployed to `/www/dashboard/`, with a `uhttpd` alias exposing it at `/dashboard`. Both paths are described in [getting started](getting-started).
+A flashable Raspberry Pi OS image boots directly into a working HALO node. The image carries all binaries, the custom `wpa_supplicant` build with mesh support, mesh scripts, the frontend, `systemd` units, `nginx`, and a first-boot provisioner. Role-based service enablement decides whether a node comes up as a gateway or a remote node. See [getting started](getting-started) for the install path.
 
 ## Where to go next
 
-- Install and run HALO in [getting started](getting-started).
-- Understand the topology in [concepts and architecture](concepts/architecture).
-- Read the subsystem references for [mesh and routing](subsystems/mesh-and-routing), the [dashboard](subsystems/dashboard), [openmanetd](subsystems/openmanetd), [boards and drivers](subsystems/boards-and-drivers), and [ADS-B to CoT](subsystems/adsb-to-cot).
-- Review device [configuration and operations](configuration).
+- Install and bring up a network in [getting started](getting-started).
+- Understand the model in [architecture](concepts/architecture) and [networking](concepts/networking).
+- Read the subsystem references: [HALO Portal](subsystems/portal), [HALO Flows](subsystems/flows), [field diagnostics](subsystems/field-diagnostics), [IO and sensors](subsystems/io-and-sensors), and [external systems](subsystems/external-systems).
+- Use the [haloctl CLI](reference/haloctl) and [gateway API](reference/api) references for day-to-day operation.
+- Review [configuration and operations](configuration) for deploy and service management.

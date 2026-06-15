@@ -19,7 +19,7 @@ documentation site renders this tree directly.
 |---------|---------|-------|
 | dragon  | v0.1.0  | 9     |
 | chaos   | v0.1.0  | 10    |
-| halo    | v0.1.0  | 9     |
+| halo    | v0.1.0  | 12    |
 | raidr   | v0.1.0  | 9     |
 
 Each `.mdx` page begins with frontmatter (`title`, `slug`, `product`,

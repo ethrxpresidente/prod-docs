@@ -1,79 +1,73 @@
 ---
-title: Concepts and architecture
+title: Architecture
 slug: concepts/architecture
 product: HALO
 version: v0.1.0
 order: 30
 eyebrow: CONCEPTS
-description: How the HALO dashboard, ubus, the mesh routing stack, and the supporting daemons compose into an OpenMANET mesh node.
+description: HALO's control plane, mesh manager, and node agent — the brain and neuron model, gateway and node roles, and the canonical device model.
 ---
 
-# Concepts and architecture
+# Architecture
 
-HALO is an application and package layer on top of OpenWrt. A node is an OpenWrt device with a Morse Micro HaLow radio, the batman-adv mesh routing stack, the supporting daemons, and the HALO dashboard. This page describes the moving parts and how data flows between them.
+HALO separates concerns into a small set of compiled Rust binaries, each statically linked and deployable as a single file. There are no runtime dependencies on the control path. A flashable OS image boots directly into a working node.
 
-## The node
+## Components
 
-Each mesh node runs OpenWrt with the OpenMANET package set. The reference node is a Raspberry Pi BCM2711 with a Morse Micro MM6108A1 radio over SDIO, running OpenMANET `24.10`. The HaLow radio operates in the sub-gigahertz S1G band — for example channel `44` at `924 MHz` with `8 MHz` bandwidth — using 802.11s mesh mode.
+Five binaries make up a HALO deployment. Each is cross-compiled to `aarch64-unknown-linux-musl` and run under `systemd`.
 
-A node holds a role in the mesh, surfaced through the `morse-mode` ubus object:
+| Binary | Role | Runs on |
+|--------|------|---------|
+| `gateway-api` | Control plane — identity, telemetry ingestion, topology, flows, API | Gateway only |
+| `halo-mesh` | Network layer — radio lifecycle, peering, `batman-adv`, DHCP, health loop | All nodes |
+| `halo-agent` | Data plane — radio, system, GPS, power, camera, and I2C telemetry | All nodes |
+| `halo-field` | Field diagnostics web UI on port `80` | Remote nodes |
+| `haloctl` | CLI administration and diagnostics | All nodes |
 
-- `mesh-gate` — an 802.11s mesh gate that bridges the mesh to a wired network.
-- `mesh-point` — an 802.11s mesh peer.
-- `ap` — access point mode.
-- `sta` — station (client) mode.
+The control plane is modular. `main.rs` is router setup only; handler logic lives across more than a dozen modules under `src/api/` — flows, nodes, system, mesh, camera, external systems, speedtest, and others. Binaries are version-stamped with the git commit hash and build timestamp, exposed at `/health` and via `--version`.
 
-## Layers
+## Gateway and node roles
 
-The stack has four layers, from radio up to operator.
+A HALO network has exactly one gateway. The gateway runs the full control plane — API, database, flow engine, and topology computation — on a single ARM board drawing under 5 W, with no cloud dependency for core operation. It is also the mesh exit point: the path to upstream connectivity and the internet.
 
-### Radio and link
+Every other device is a node. Nodes run `halo-mesh` and `halo-agent`, peer into the mesh, and report telemetry to the gateway over the encrypted overlay. The service dependency chain is `halo-mesh` → `gateway-api` + `halo-agent`; mesh is the root dependency on every device.
 
-The Morse Micro HaLow driver (`kmod-morse`) drives the MM6108-class chipset over SDIO, SPI, or USB. Board support packages provide firmware, BCF selection, default channel, and SAE mesh fixes per platform. The radio forms an 802.11s mesh; `mesh11sd` applies mesh parameters dynamically so settings take effect without restarting the wireless network.
+## Brain and neuron model
 
-### Routing
+HALO models a deployment as a brain composed of neurons.
 
-`batman-adv` (BATMAN_V) provides layer-2 multi-hop routing across the mesh. Mesh radios are enslaved to a `bat0` soft interface as `batadv_hardif` ports. batman-adv maintains an originator table of all reachable nodes and a neighbor table of one-hop peers; these are the source of the topology shown in the dashboard.
+- **Brain** — the HALO platform as a whole.
+- **Neuron** — a logical unit within the brain. Each neuron has four standard components.
 
-### Mesh services
+| Component | Role |
+|-----------|------|
+| `sensor` | Gathers input — GPIO reads, GPS, radio signal, camera |
+| `thought` | Processing, routing, coordination, decisions |
+| `memory` | Persistent state — telemetry storage, config, logs |
+| `send` | Output — HaLow radio, LoRa, WiFi mesh, display |
 
-`alfred` distributes arbitrary local facts — hostnames, gateway, node, and position records — across the mesh over IPv6 link-local multicast, with no configuration. `openmanetd` is the OpenMANET manager: it consumes GNSS, drives `alfred` data exchange, and provides a multicast push-to-talk voice path. `gpsd` feeds position from a GNSS receiver.
+Neuron components follow the naming convention `brain-<component>-<neuron>`, for example `brain-sensor-n01`.
 
-### Operations
+> These are logical roles, not fixed physical devices. A single board may host one or several neuron components. Never assume a one-to-one mapping. Reason from brain to neuron to component role to physical device.
 
-The HALO dashboard and LuCI both run under `uhttpd`. The dashboard is the primary operations surface; LuCI remains available for advanced configuration through the dashboard's `Advanced Config` link.
+## Canonical device model
 
-## Data flow to the dashboard
+Every physical device maps to a single canonical identity. Interfaces, sensors, attached endpoints, roles, and telemetry sources are modeled as children of that identity, not as independent objects. A node that moves from Ethernet to mesh to overlay remains one node. This prevents inventory duplication across transport changes and keeps topology computation clean.
 
-The dashboard is a static SPA. Every piece of device data it shows flows through the `ubus` JSON-RPC interface served by `uhttpd`.
+The terminology is precise and consistent across the API, CLI, and UI:
 
-```
-OpenWrt device (ubusd)
-        |
-   POST /ubus  (JSON-RPC 2.0)
-        |
-   src/lib/ubus.ts          typed RPC client + convenience wrappers
-        |
-   src/hooks/useUbus.ts     React hooks with polling
-        |
-   page components -> dashboard primitives
-```
+- **Node** — a device running HALO software.
+- **Gateway** — the single controller node; control-plane services and the HALO exit point.
+- **HALO network** — one ethrx deployment boundary, containing one or more meshes and nodes.
+- **Mesh** — an authenticated RF domain defined by an `SSID`/channel/PSK profile, for example `ETHRX0001-8A`.
+- **Data provider** — a non-gateway node that supplies telemetry. Presented as `Sensors` in the UI.
+- **Data consumer** — a non-HALO endpoint attached locally to a node. Presented as `Clients` in the UI.
 
-A single client (`ubusCall`) dispatches every request as a JSON-RPC `call` with the session ID, ubus path, method, and params. Typed convenience wrappers cover `system.board`, `system.info`, `network.interface.dump`, `iwinfo.info`, `iwinfo.assoclist`, `morse-mode.query`, `firewall.zones`, `firewall.forwardings`, `dhcp.leases`, `batadv.originators`, and `batadv.neighbors`. React hooks wrap these calls and poll at intervals tuned for embedded devices — system info every `5s`, interfaces and mesh every `10s`, DHCP leases every `15s`.
+## Self-healing by design
 
-## Mock and live modes
-
-The dashboard runs in one of two modes, selected by the `VITE_USE_DEVICE` environment variable.
-
-| Mode | Condition | Behavior |
-|------|-----------|----------|
-| Mock | `VITE_USE_DEVICE` unset | Returns deterministic mock data with a simulated delay |
-| Live | `VITE_USE_DEVICE=true` | POSTs to `/ubus` on the device |
-
-Mock data mirrors real device output captured from a BCM2711 / MM6108A1 / OpenMANET `24.10` node, so the UI is fully exercisable offline. In production the built SPA lives at `/www/dashboard/` and `uhttpd` serves `/ubus` natively — no proxy is needed.
+The mesh manager continuously monitors link state, peer count, radio process health, and routing table integrity. On failure it applies graduated recovery: re-initiate peer discovery, then restart the radio stack, then reload the kernel driver. Background maintenance loops scan for lost peers every 30 seconds and re-establish links automatically. The system is validated against single-node reboot, gateway-only reboot, and simultaneous full-network reboot. In each case the mesh re-peers, re-acquires addresses, and restores encrypted reachability without operator intervention.
 
 ## Where to go next
 
-- [Mesh and routing](subsystems/mesh-and-routing) covers HaLow, batman-adv, alfred, and mesh11sd.
-- [The dashboard](subsystems/dashboard) covers the SPA, its pages, and the ubus client.
-- [openmanetd](subsystems/openmanetd) covers the manager daemon.
+- See how the radio and tunnel layers fit together in [networking](concepts/networking).
+- Read how telemetry and automation use this model in [HALO Flows](subsystems/flows).

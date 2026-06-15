@@ -1,0 +1,52 @@
+---
+title: External systems
+slug: subsystems/external-systems
+product: HALO
+version: v0.1.0
+order: 90
+eyebrow: SUBSYSTEMS
+description: Agent-less monitoring of third-party systems — Proxmox, Synology, UniFi, HTTP, and ping — polled by the gateway and usable as flow data sources.
+---
+
+# External systems
+
+HALO monitors third-party systems without deploying an agent on them. The gateway polls each configured system in the background and records its metrics alongside mesh telemetry. External systems are managed on the Systems page of [HALO Portal](subsystems/portal).
+
+## Presets
+
+A new external system starts from a preset that supplies the connection shape and default metrics.
+
+| Preset | Target |
+|--------|--------|
+| Proxmox | Proxmox VE virtualization hosts |
+| Synology | Synology NAS appliances |
+| UniFi | UniFi network controllers |
+| HTTP | Any HTTP endpoint |
+| Ping | ICMP reachability |
+| Custom | A user-defined system |
+
+A Proxmox VE 8.4 host is supported and live in the reference deployment.
+
+## Polling
+
+The gateway runs a background poller against each system on its own interval. Collected values become metrics on the external system, queryable the same way as node telemetry. A connection test confirms credentials and reachability before a system is saved.
+
+## OpenAPI import
+
+For HTTP systems, HALO can import an OpenAPI specification and expose the described endpoints as data sources. This lets HALO act as the orchestration layer between field-deployed sensors and existing enterprise systems — pulling metrics from external APIs into the same framework used for mesh telemetry.
+
+```bash
+POST /v1/external-systems/{id}/import-oas   # import an OpenAPI spec
+GET  /v1/external-systems/{id}/endpoints    # list imported endpoints
+GET  /v1/external-systems/{id}/metrics      # list collected metrics
+POST /v1/external-systems/{id}/test         # test the connection
+```
+
+The full endpoint set is in the [gateway API reference](reference/api).
+
+> Exposing external endpoints as triggers and actions inside [HALO Flows](subsystems/flows) is planned. Today external systems are monitored and queryable; using their endpoints directly as flow data sources is upcoming work.
+
+## Where to go next
+
+- Add and configure systems on the Systems page in [HALO Portal](subsystems/portal).
+- Review the external-systems endpoints in the [gateway API reference](reference/api).

@@ -1,0 +1,71 @@
+---
+title: IO and sensors
+slug: subsystems/io-and-sensors
+product: HALO
+version: v0.1.0
+order: 80
+eyebrow: SUBSYSTEMS
+description: Plug-and-play I2C sensors, TOML board definitions, and the IO page — HALO auto-detects hardware and reports telemetry without recompiling.
+---
+
+# IO and sensors
+
+HALO auto-detects connected hardware and reports its telemetry without firmware changes. Sensor behavior and board layout are defined by templates — small data files — so new hardware is added by dropping a file in place, not by recompiling.
+
+## I2C sensor templates
+
+Wire a sensor to a node's I2C bus and, within 60 seconds, the agent scans the bus, identifies the device by `WHO_AM_I` register and address matching, and begins reporting telemetry through the template interpreter.
+
+Nine sensors are built in:
+
+```text
+INA219   BME280   BH1750   ADS1115   HDC1080
+SHT31    MPU6050  VL53L0X  SSD1306
+```
+
+User templates are TOML files placed in `/etc/halo/i2c-templates/` and auto-detected within 60 seconds. A template describes how to initialize, calibrate, and read a device — adding a sensor is a file, not a build.
+
+Detected sensors report telemetry with the naming pattern `i2c.{template_id}.{metric_name}`:
+
+| Metric | Unit | Sensor |
+|--------|------|--------|
+| `i2c.ina219.voltage_v` | V | INA219 bus voltage |
+| `i2c.ina219.current_a` | A | INA219 current |
+| `i2c.bme280.temperature_c` | celsius | BME280 temperature |
+| `i2c.bme280.humidity_pct` | percent | BME280 relative humidity |
+| `i2c.bh1750.illuminance_lux` | lux | BH1750 ambient light |
+| `i2c.vl53l0x.distance_mm` | mm | VL53L0X distance |
+
+These metrics are available as triggers and conditions in [HALO Flows](subsystems/flows).
+
+## Board definitions
+
+The same template-driven approach covers board support. Board Definition files are TOML descriptions of header layouts mapping GPIO to physical header positions. Five boards are built in — RPi4B, RPi3B, Pi Zero 2W, Jetson Nano, and a generic 40-pin layout — and auto-detected from `/proc/device-tree/model`. Add a new board by dropping a TOML file in `/etc/halo/boards/`.
+
+The system degrades gracefully on unknown boards: I2C scanning and sensor collection still work, but physical pin numbers are unavailable until a board definition is present.
+
+## The IO page
+
+The IO page in [HALO Portal](subsystems/portal) brings this together visually:
+
+- An interactive board wireframe SVG rendered from the device's mechanical drawing, with a color-coded GPIO overlay.
+- Per-node I2C device inventory.
+- A GPIO pin table merging the board definition with live pin state.
+- A wiring guide.
+- An Add Device wizard: pick a device type, assign a pin, run a live toggle test to verify wiring, and save — without leaving the page.
+
+## GPIO safety
+
+GPIO control on HaLow nodes must use `libgpiod`, never `pinctrl`.
+
+```bash
+gpioset gpiochip0 17=1    # output high
+gpioget gpiochip0 17      # read input
+```
+
+> Never use `pinctrl set` on HaLow nodes. It writes BCM2711 GPIO registers via raw MMIO and shares the register block with the Morse SDIO driver. Unprotected read-modify-write during SDIO transactions causes bus contention, SDIO timeouts, and a radio crash. Always use `gpioset`/`gpioget`. On Pi4 Bookworm, `gpioset` persists pin state after exit.
+
+## Where to go next
+
+- Inspect buses and pins from the CLI in [haloctl](reference/haloctl) (`haloctl local i2c scan`, `haloctl local gpio`).
+- Wire sensor metrics into automation with [HALO Flows](subsystems/flows).

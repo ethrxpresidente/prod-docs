@@ -1,0 +1,77 @@
+---
+title: HALO Portal
+slug: subsystems/portal
+product: HALO
+version: v0.1.0
+order: 50
+eyebrow: SUBSYSTEMS
+description: HALO Portal is the web admin UI — a React single-page app served on the gateway for monitoring, control, and configuration of the mesh.
+---
+
+# HALO Portal
+
+HALO Portal is the web admin UI. It is a React single-page application served by `nginx` on port `80` of the gateway, talking to the gateway API on port `8080`. It uses a dark monochrome tactical theme and renders live system, radio, network, and mesh telemetry over HTTP and WebSocket.
+
+## Access and roles
+
+Open the Portal at the gateway's address and log in.
+
+```text
+http://<gateway-lan-ip>/
+```
+
+Authentication is JWT-based with a 60-minute token TTL. Three roles control access:
+
+- `admin` — full access.
+- `operator` — read plus limited write.
+- `viewer` — read-only.
+
+On first login the gateway forces the admin account to set a new password.
+
+## Pages
+
+The Portal is organized into focused pages, each backed by API endpoints described in the [gateway API reference](reference/api).
+
+| Page | Purpose |
+|------|---------|
+| Dashboard | Topology canvas with card-style nodes, live health, and mesh status |
+| Network | Interfaces, ARP, DHCP leases, and routing |
+| Wireless | Radio configuration, channels, and association lists |
+| Diagnostics | Mesh health, signal, and connectivity checks |
+| Flows | Drag-and-drop builder for HALO Flows automation |
+| IO | Interactive board wireframe, GPIO inventory, and the Add Device wizard |
+| Events | Platform event stream |
+| Systems | External system monitoring and configuration |
+| Security | Credentials, password changes, and security config |
+| Connections | Attached clients and endpoints per node |
+| Trust | Mesh trust secret and the trusted-MAC whitelist |
+| Settings | General node and platform configuration |
+
+## Front-end stack
+
+| Technology | Use |
+|-----------|-----|
+| React 18.3 + Vite 5.4 | SPA framework and build tooling |
+| React Flow (`@xyflow/react`) | Drag-and-drop canvas for the Flows builder |
+| Tailwind CSS + shadcn/ui | Monochrome tactical theme and accessible components |
+| Leaflet 1.9 | Map for GPS positions |
+| `xterm.js` 5.3 | Web terminal for SSH sessions |
+| Lucide React | Icons |
+
+The Portal uses `BrowserRouter` for clean URLs. The API client lives in `frontend/src/lib/api.ts`, with data hooks in `hooks/useApi.ts` and auth context in `hooks/useAuth.tsx`.
+
+## Serving and deployment
+
+`nginx` serves the static frontend on port `80` and reverse-proxies the API and WebSocket stream to `127.0.0.1:8080`. Build the frontend for device use before deploying it.
+
+```bash
+cd frontend && VITE_USE_DEVICE=true npm run build
+```
+
+> Embedding the frontend directly in the binary with `rust-embed` — eliminating `nginx` and producing a single artifact — is planned but not yet shipped.
+
+## Where to go next
+
+- Build automations on the Flows page — see [HALO Flows](subsystems/flows).
+- Wire and inspect sensors from the IO page — see [IO and sensors](subsystems/io-and-sensors).
+- Add agent-less monitors on the Systems page — see [external systems](subsystems/external-systems).

@@ -5,91 +5,103 @@ product: HALO
 version: v0.1.0
 order: 20
 eyebrow: GET STARTED
-description: Build the OpenMANET packages, install the HALO dashboard on a device, and run the dashboard locally against mock or live ubus data.
+description: Flash a HALO image, bring up a gateway, join the first node, and reach HALO Portal — the path from bare hardware to a running mesh.
 ---
 
 # Getting started
 
-HALO is delivered in two parts. The mesh stack is built from the OpenMANET packages feed against an OpenWrt buildroot. The dashboard is a static SPA built with Node.js and deployed to the device. This page covers both, plus running the dashboard locally for development.
+This page takes you from bare hardware to a running HALO network with one gateway and one node. A HALO network has exactly one gateway — the control-plane and mesh exit point — and one or more nodes peered to it over HaLow.
 
 ## Prerequisites
 
-- An OpenWrt buildroot for your target. The feed layers on top of it; it is not standalone.
-- Supported hardware for a live deployment — a Morse Micro HaLow radio on a BCM271x, Venice, or HaLow Link 2 board.
-- Node.js and `npm` to build the dashboard.
+- A Raspberry Pi 4B (or compatible ARM board) for the gateway, with upstream connectivity on `eth0`.
+- One or more Pi-class boards for nodes, each with a Morse Micro HaLow radio.
+- A HALO `.img.gz` image. Build it on a Pi with the `pi-gen` builder in `deploy/image/` — do not build the image on Windows, where path handling corrupts the build.
+- A workstation to flash the image and reach the gateway over LAN.
 
-## Install the OpenMANET feed
+## Flash and first boot
 
-The feed is an OpenWrt `packages`-style feed and is enabled by default in an OpenMANET buildroot. From the buildroot root, update and install the package definitions.
-
-```bash
-./scripts/feeds update
-./scripts/feeds install -a -p openmanet
-```
-
-Select packages with `make menuconfig`, then build. Mesh packages live under `Network`, `OpenMANET`, `Drivers`, and `Utilities`. The dashboard appears under `Network` as `openmanet-dashboard`.
+Write the image to each board's SD card and boot it.
 
 ```bash
-make menuconfig
-make package/openmanet-dashboard/compile V=s
+zcat halo-<version>.img.gz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-Firmware builds are pinned to a git sha for repeatable output. Pre-built `.ipk` packages install on a running device with `opkg`.
+The image carries all five binaries (`gateway-api`, `halo-agent`, `halo-mesh`, `halo-field`, `haloctl`), the custom `wpa_supplicant`, mesh scripts, the frontend, `nginx`, `dnsmasq`, `wireguard-tools`, and `gpsd`. A first-boot provisioner reads `halo.toml` from the FAT32 boot partition and enables services according to the node role.
+
+Role-based service enablement decides what comes up:
+
+- **Gateway nodes** start `nginx` and `gateway-api`.
+- **Remote nodes** start `halo-field` on port `80`.
+
+> `halo-mesh` is the root dependency. If `systemctl is-enabled halo-mesh` returns `disabled`, no HALO services start on boot. Always verify it is enabled after any hardware change.
+
+## Bring up the gateway
+
+On the gateway, run the interactive setup wizard. It prompts for node name and ID, role, mesh `SSID`/`PSK`/country/channel, and admin credentials, then writes `/etc/halo/config.yaml`.
 
 ```bash
-opkg install openmanet-dashboard_*.ipk
+haloctl setup
 ```
 
-## Install the dashboard on a device
-
-The dashboard package builds the SPA, copies it to `/www/dashboard/`, and drops a uci-default that adds the `uhttpd` alias. To install a standalone `.ipk` and wire the alias by hand:
+Confirm the gateway is healthy. Every check should report `PASS`.
 
 ```bash
-opkg install openmanet-dashboard_*.ipk
-uci set uhttpd.main.alias='/dashboard=/www/dashboard'
-uci commit uhttpd
-/etc/init.d/uhttpd restart
+haloctl gateway-health
 ```
 
-The dashboard is then reachable at `http://<device-ip>/dashboard`. Authentication uses the device's ubus session — log in with the system credentials, typically `root` and the device password.
+A healthy gateway shows `halo-mesh`, `gateway-api`, and `halo-agent` active, `wlan0` in mesh point mode, a `bat0` address on `10.41.0.0/24`, a `wg0` address on `10.42.0.0/24`, and a recent WireGuard handshake.
 
-## Build the dashboard from source
+## Reach HALO Portal
 
-To produce a device build outside the OpenWrt package flow, build with `VITE_USE_DEVICE=true` so the SPA targets the live `/ubus` endpoint instead of mock data, then copy the output to the device.
+HALO Portal is served by `nginx` on port `80` of the gateway. Open it in a browser and log in.
+
+```text
+http://<gateway-lan-ip>/
+```
+
+Default credentials are `admin` / `ethrx`. On first login the gateway forces an admin password change. The API itself listens on port `8080`; `nginx` proxies it and the WebSocket stream behind port `80`.
+
+## Join the first node
+
+Node onboarding is automatic. A node boots, joins the `802.11s` mesh, peers with the gateway, and acquires a `bat0` address via DHCP. It then registers a WireGuard key and starts reporting:
+
+1. The node peers with the gateway over HaLow and gets an underlay IP on `10.41.0.0/24`.
+2. It calls `POST /v1/mesh/wg-register`, exchanges WireGuard keys, and receives an overlay IP on `10.42.0.0/24`.
+3. The agent authenticates and runs a heartbeat loop, posting telemetry every 5 seconds.
+4. The node appears in the topology and on the dashboard.
+
+From the gateway you can list known nodes and confirm reachability.
 
 ```bash
-VITE_USE_DEVICE=true npm run build
-scp -r dist/* root@<device-ip>:/www/dashboard/
+haloctl gateway-peers
 ```
 
-Add the alias to `/etc/config/uhttpd` if it is not already present:
-
-```
-option alias '/dashboard=/www/dashboard'
-```
-
-When the SPA is served from `/www/dashboard/`, set `base` to `/dashboard/` in `vite.config.ts` so asset paths resolve correctly.
-
-## Run the dashboard locally
-
-The dashboard runs against deterministic mock data with no device attached. Mock mode is the default and is active whenever `VITE_USE_DEVICE` is unset, covering local development and CI.
+If a node needs admin approval before it is trusted, approve it from the gateway.
 
 ```bash
-npm install
-npm run dev
+haloctl admin list
+haloctl admin approve <registration-id>
 ```
 
-To develop against a real device, set `VITE_USE_DEVICE=true` and point the Vite dev-server proxy at the device IP. The default device address used by the proxy is `192.168.0.230`; override it with `VITE_DEVICE_IP`.
+## Verify the mesh
+
+Check the full node status dashboard on any device.
 
 ```bash
-VITE_USE_DEVICE=true VITE_DEVICE_IP=10.41.0.1 npm run dev
+haloctl status
 ```
 
-## First-boot configuration
+From a remote node, confirm it can reach the gateway through the mesh.
 
-The dashboard includes a four-step setup wizard at `/setup` for initial device configuration. For day-to-day changes, use the per-section pages described in [the dashboard reference](subsystems/dashboard). For configuration that the dashboard does not yet cover, the sidebar links out to the LuCI interface at `/cgi-bin/luci`.
+```bash
+haloctl remote-diag
+```
+
+> SSH over the WireGuard overlay (`10.42.0.x`) is unreliable during banner exchange. Prefer LAN IPs when available, or use `curl http://10.42.0.2:80/api/diag` from the gateway as a diagnostic fallback — `halo-field` always responds even when SSH does not.
 
 ## Where to go next
 
-- Learn how the pieces fit together in [concepts and architecture](concepts/architecture).
-- Configure the device in [configuration and operations](configuration).
+- Learn the platform model in [architecture](concepts/architecture).
+- Understand the radio and tunnel layers in [networking](concepts/networking).
+- Build your first automation in [HALO Flows](subsystems/flows).

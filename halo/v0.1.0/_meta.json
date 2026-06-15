@@ -4,11 +4,14 @@
     "index",
     "getting-started",
     "concepts/architecture",
-    "subsystems/mesh-and-routing",
-    "subsystems/dashboard",
-    "subsystems/openmanetd",
-    "subsystems/boards-and-drivers",
-    "subsystems/adsb-to-cot",
+    "concepts/networking",
+    "subsystems/portal",
+    "subsystems/flows",
+    "subsystems/field-diagnostics",
+    "subsystems/io-and-sensors",
+    "subsystems/external-systems",
+    "reference/haloctl",
+    "reference/api",
     "configuration"
   ]
 }

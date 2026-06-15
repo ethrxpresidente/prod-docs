@@ -1,0 +1,93 @@
+---
+title: Gateway API
+slug: reference/api
+product: HALO
+version: v0.1.0
+order: 110
+eyebrow: REFERENCE
+description: The HALO gateway REST API — JWT auth, node onboarding, telemetry, mesh topology, flows, and external systems, with interactive Swagger docs.
+---
+
+# Gateway API
+
+The gateway exposes a REST API for every platform function — identity, telemetry, topology, flows, and external systems. It is documented with OpenAPI and served with an interactive Swagger UI.
+
+```text
+Base URL:    http://<gateway-ip>:8080
+Swagger UI:  http://<gateway-ip>:8080/docs
+OpenAPI:     http://<gateway-ip>:8080/openapi.json
+```
+
+## Authentication
+
+Most endpoints require a Bearer token. Obtain one by logging in, then include it on subsequent requests.
+
+```text
+POST /api/auth/login
+{ "username": "admin", "password": "ethrx" }
+
+→ { "access_token": "eyJ...", "token_type": "bearer" }
+
+Authorization: Bearer eyJ...
+```
+
+Tokens have a 60-minute TTL. Three roles exist: `admin` (full access), `operator` (read plus limited write), and `viewer` (read-only). Separate login endpoints issue tokens per role.
+
+## Endpoint categories
+
+The API spans 60-plus endpoints. The categories below summarize the surface; the Swagger UI is authoritative.
+
+| Category | Scope |
+|----------|-------|
+| System | Health, capabilities, metrics, auth, board, CPU, system info |
+| Mesh | Status, topology, health score, peers, channels, config, `batman-adv` tables |
+| Nodes | Join, register, heartbeat, telemetry, radio, health, interfaces, endpoints |
+| Camera | Detect, status, start/stop, MJPEG stream proxy |
+| Trust | Mesh trust secret and the trusted-MAC whitelist |
+| Power | UPS sample ingest and latest readings |
+| Network | Interfaces, ARP, wireless info, association list, DHCP leases |
+| Firewall | Zones and forwarding rules |
+| Canonical model | HALO networks, underlay domains, node roles and interfaces |
+| Flows | Full CRUD, trigger, executions, builder metadata |
+| External systems | CRUD, presets, test, metrics, endpoints, OpenAPI import |
+| Sensors and GPIO | I2C devices and assignments, sensor templates, GPIO inventory, board definitions |
+| Admin | Registration list, approve, reject |
+
+Unauthenticated endpoints are intentionally narrow: `/health`, `/capabilities`, `/metrics`, the login routes, the MJPEG stream proxy, and `POST /v1/mesh/wg-register` — which nodes call during provisioning before they hold credentials.
+
+## Node onboarding
+
+Onboarding is automatic and uses a fixed sequence of calls:
+
+1. The node boots, joins the `802.11s` mesh, and peers with the gateway.
+2. It acquires a `bat0` underlay address via DHCP on `10.41.0.0/24`.
+3. `POST /v1/mesh/wg-register` exchanges WireGuard keys and returns an overlay IP on `10.42.0.0/24`.
+4. The agent logs in via `POST /api/auth/login` and receives a JWT.
+5. The agent posts `POST /v1/nodes/heartbeat` every 5 seconds.
+6. The node appears in `GET /v1/mesh/topology`.
+
+A heartbeat carries node identity, address, signal, capabilities, interfaces, and active transport; the response returns the auto-assigned overlay IP when available.
+
+## Telemetry metrics
+
+The agent reports metrics each radio interval (default 5 seconds). Mesh and radio metrics use a `mesh.*` and `gps.*` namespace; auto-detected sensors use `i2c.{template}.{metric}`.
+
+| Metric | Unit | Description |
+|--------|------|-------------|
+| `mesh.tx_mbps` / `mesh.rx_mbps` | Mbps | Mesh throughput |
+| `mesh.signal_dbm` | dBm | Average signal strength |
+| `mesh.plink_estab` | count | Established peer links |
+| `mesh.neighbor_count` | count | Mesh neighbors |
+| `mesh.tx_retries` / `mesh.tx_failed` | count | TX retries and failures |
+| `gps.fix_mode` | enum | `0` none, `2` 2D, `3` 3D |
+| `gps.sats_used` | count | Satellites in use |
+| `i2c.{template}.{metric}` | varies | Auto-detected sensor metrics |
+
+## Backend stack
+
+The API is an Axum 0.8 service backed by SQLite via `sqlx` (WAL mode), with Tokio for async IO and process spawning, JWT auth via `jsonwebtoken`, `reqwest` for outbound HTTP, and `utoipa` generating the OpenAPI document and Swagger UI. It compiles to a single static binary with no runtime dependencies.
+
+## Where to go next
+
+- Drive the same operations from the shell with [haloctl](reference/haloctl).
+- See how flows consume these endpoints in [HALO Flows](subsystems/flows).

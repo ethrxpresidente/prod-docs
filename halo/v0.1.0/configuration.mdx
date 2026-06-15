@@ -3,66 +3,105 @@ title: Configuration and operations
 slug: configuration
 product: HALO
 version: v0.1.0
-order: 90
+order: 120
 eyebrow: OPERATIONS
-description: Configure and operate a HALO node — UCI and service files, the ubus surface, dashboard maintenance actions, and where LuCI fits.
+description: Build, deploy, and operate HALO — cross-compilation, binary push deploys, systemd service management, and device file locations.
 ---
 
 # Configuration and operations
 
-A HALO node is configured the OpenWrt way — UCI config, `procd` services, and `ubus` — with the dashboard and LuCI as the two web surfaces on top. This page covers where configuration lives, how the dashboard reaches it, and the operational levers.
+This page covers building HALO, deploying binaries to devices, and managing services in the field.
 
-## Configuration model
+## Build
 
-Device configuration is UCI under `/etc/config`. Mesh and application packages add their own config files and preserve operator edits as conffiles across upgrades:
-
-- `/etc/config/batman-adv` — batman-adv mesh routing.
-- `/etc/config/alfred` — alfred data exchange.
-- `/etc/config/mesh11sd` — dynamic 802.11s parameters.
-- `/etc/config/gpsd` — GNSS daemon.
-- `/etc/config/uhttpd` — web server and the dashboard alias.
-- `/etc/openmanetd/config.yml` — the openmanetd manager (YAML, not UCI).
-- `/etc/adsbcot/adsbcot.ini` — ADS-B to CoT forwarding.
-
-Services are `procd` init scripts in `/etc/init.d`. Start, stop, enable, and disable them the standard way.
+HALO cross-compiles from a workstation to `aarch64-unknown-linux-musl` using Zig as the linker. Always use `cargo zigbuild`, never `cargo build`.
 
 ```bash
-/etc/init.d/openmanetd restart
-/etc/init.d/adsbcot disable
+# Cross-compile all binaries
+cargo zigbuild --release --target aarch64-unknown-linux-musl \
+  --bin halo --bin halo_agent --bin halo-mesh --bin halo-field --bin haloctl
+
+# Single binary
+cargo zigbuild --release --target aarch64-unknown-linux-musl --bin halo
+
+# Fast type/borrow check on the workstation
+cargo check
+
+# Build the frontend for device use
+cd frontend && VITE_USE_DEVICE=true npm run build
 ```
 
-## The ubus surface
+SQLite is statically linked. Binaries are version-stamped with the git commit hash and build timestamp via `build.rs`, exposed at `/health` and through `--version`.
 
-The dashboard reads and writes the device through `ubus`. Confirmed objects on a node include `system`, `network`, `network.interface`, `network.wireless`, `iwinfo`, `morse-mode`, `mesh11s`, `firewall`, `dhcp`, `dnsmasq`, `uci`, `session`, `hostapd`, `wpa_supplicant`, `luci`, and `luci-rpc`. The dashboard's read paths — board, system info, interfaces, radio, associated clients, mesh mode, firewall, leases, and BATMAN originators and neighbors — are live in `v0.1.0`.
+## Deploy
 
-## Dashboard maintenance actions
+Deploy is a binary push followed by a service restart. Serve the artifact over HTTP from the workstation and pull it onto the device with `wget` — do not use SCP.
 
-The dashboard's Settings page exposes device operations. In `v0.1.0` several of these are integration points still being wired to live ubus calls; the intended bindings are:
+```bash
+# 1. Serve the release artifact from the build output directory
+python -m http.server 9001
 
-- Hostname and timezone — `uci set` and `uci commit`.
-- Backup and restore — `luci generateBackup` and `restoreBackup`.
-- Reboot — `system reboot`.
-- The Diagnostics ping tool — `file exec`.
-- The setup wizard — applies configuration through UCI calls on finish.
+# 2. Stop, replace, restart, and check on the gateway
+ssh halo-gw "sudo systemctl stop gateway-api \
+  && sudo wget -q -O /usr/local/bin/gateway-api http://<workstation-ip>:9001/halo \
+  && sudo chmod +x /usr/local/bin/gateway-api \
+  && sudo systemctl start gateway-api \
+  && sleep 3 && sudo systemctl status gateway-api"
 
-Until those are wired on a given build, perform the equivalent change through LuCI or the CLI.
+# 3. Verify a clean startup before confirming
+ssh halo-gw "journalctl -u gateway-api -n 30 --no-pager"
+```
 
-## Reaching LuCI
+Always read the logs before declaring a deploy good.
 
-The dashboard does not cover every OpenWrt setting. The sidebar's `Advanced Config` link opens LuCI at `/cgi-bin/luci` in a new tab. HALO ships LuCI components for the OpenMANET stack — `luci-mod-home`, `luci-app-morseconfig`, the Morse AP and EKH wizards, a range test app, the mesh visualizer library, and OpenMANET themes — so mesh-specific configuration is available there.
+## Services
 
-## Operating the mesh
+Services are managed with `systemd`. The dependency chain is `halo-mesh` → `gateway-api` + `halo-agent`; mesh is the root dependency.
 
-batman-adv forms the mesh automatically once radios are enslaved to `bat0`. `mesh11sd` keeps mesh parameters applied without restarting the wireless network. `alfred` discovers peers over IPv6 link-local multicast with no configuration. To inspect mesh state from the shell, use `batctl`; to inspect it from the browser, use the dashboard's network and mesh views, which poll the originator and neighbor tables every `10s`.
+```bash
+ssh halo-gw "sudo systemctl restart gateway-api"
+ssh halo-gw "sudo systemctl status gateway-api"
+ssh halo-gw "journalctl -u gateway-api -f"            # live logs
+ssh halo-gw "journalctl -u gateway-api -n 50 --no-pager"
+```
 
-`openmanetd` restarts automatically when `bat0` comes up, re-establishing its alfred bindings and GNSS publishing. Position flows from `gpsd` through `openmanetd`, which can republish it as NMEA and as CoT.
+> If `systemctl is-enabled halo-mesh` returns `disabled`, no HALO services start on boot. Always verify the enabled state after any hardware change.
 
-## Upgrades
+## Binary paths on device
 
-Firmware builds are pinned to a git sha for repeatable output, and updates from the feed are integrated into OpenMANET when a new build is cut. There is no fixed cadence. Conffiles listed above survive package upgrades, so operator edits to mesh, daemon, and ADS-B configuration persist.
+| Path | Binary |
+|------|--------|
+| `/usr/local/bin/gateway-api` | Main API server (gateway only) |
+| `/usr/local/bin/halo-agent` | Node agent (all nodes) |
+| `/usr/local/bin/halo-mesh` | Mesh manager (all nodes) |
+| `/usr/local/bin/halo-field` | Field diagnostics UI (remote nodes, port `80`) |
+| `/usr/local/bin/haloctl` | CLI tool |
+
+## Configuration and data locations
+
+| Path | Holds |
+|------|-------|
+| `/etc/halo/config.yaml` | Node configuration written by `haloctl setup` |
+| `/etc/halo/agent-env` | API credentials for agent and CLI |
+| `/etc/halo/i2c-templates/` | User I2C sensor templates (TOML) |
+| `/etc/halo/boards/` | Custom board definitions (TOML) |
+| `/var/lib/halo/rf-config.json` | Authoritative RF bandwidth configuration |
+| `/var/lib/halo/field-tests/` | Persistent field test CSV recordings |
+| `/usr/local/sbin/wpa_supplicant` | Custom build with mesh support |
+
+## Do not modify without explicit instruction
+
+Several files carry fragile, load-bearing configuration. Leave them alone unless a task explicitly requires a change:
+
+- `migrations/` — schema; never auto-generate.
+- `Cargo.toml` — no dependency changes without approval.
+- `.cargo/config.toml` — cross-compile linker.
+- `.github/workflows/` — CI pipeline.
+- `build.rs` — version stamping.
+- `deploy/mesh/mesh-setup-*.sh` — the Morse peering fix lives here.
+- Public API route signatures and any `*_schema` / `*_config` structs — wire-format implications.
 
 ## Where to go next
 
-- [Getting started](getting-started) covers building and installing the stack.
-- [The dashboard](subsystems/dashboard) covers each operations page in detail.
-- [openmanetd](subsystems/openmanetd) covers the manager daemon's configuration.
+- Diagnose a deployed node with [haloctl](reference/haloctl).
+- Review the API surface in the [gateway API reference](reference/api).

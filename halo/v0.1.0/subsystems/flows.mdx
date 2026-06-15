@@ -1,0 +1,98 @@
+---
+title: HALO Flows
+slug: subsystems/flows
+product: HALO
+version: v0.1.0
+order: 60
+eyebrow: SUBSYSTEMS
+description: HALO Flows is the event pipeline engine — a visual builder chaining triggers, conditions, and actions to automate responses to mesh and sensor events.
+---
+
+# HALO Flows
+
+HALO Flows is the event pipeline engine. It is a visual builder for automated responses to network and sensor events. A flow chains triggers, conditions, and actions; the gateway evaluates flows on a background scheduler and inline on incoming telemetry.
+
+## How flows run
+
+The scheduler runs every 30 seconds. Heartbeat and telemetry triggers also evaluate inline as data arrives, so threshold breaches act without waiting for the next scheduler tick. Flows are authored graphically on the Flows page of [HALO Portal](subsystems/portal) and execute on the gateway.
+
+## Triggers
+
+A trigger starts a flow.
+
+| Trigger | Fires on |
+|---------|----------|
+| `sensor_value` | A telemetry metric crossing a configured value |
+| `node_event` | A node lifecycle or state event |
+| `schedule` | A time schedule |
+| `manual` | An operator action or `POST /v1/flows/{id}/trigger` |
+
+## Conditions
+
+A condition gates whether execution continues.
+
+| Condition | Effect |
+|-----------|--------|
+| `threshold` | Compare a metric against a value with an operator |
+| `cooldown` | Rate-limit a flow to suppress repeat firing |
+| `response` | Parse and test the result of a prior step |
+
+## Actions
+
+An action does the work.
+
+| Action | Effect |
+|--------|--------|
+| `alert` | Raise a platform alert |
+| `webhook_out` | Send an outbound webhook (Teams, Slack) |
+| `command` | Run a command over SSH on a node |
+| `for_each_node` | Iterate an action across nodes |
+
+## Context variables
+
+Action templates interpolate context variables resolved at execution time.
+
+```text
+{node_id}    {node_name}    {metric}    {value}
+{threshold}  {operator}     {prev_result}
+```
+
+A webhook body or alert message can reference these directly, for example: `Node {node_name} {metric} hit {value} (threshold {threshold}).`
+
+## Data model
+
+Flows persist across a set of SQLite tables on the gateway.
+
+| Table | Holds |
+|-------|-------|
+| `flows` | Flow definitions |
+| `flow_steps` | Individual trigger/condition/action steps |
+| `flow_edges` | Connections between steps |
+| `flow_executions` | Execution history |
+| `flow_action_templates` | Reusable action templates |
+| `flow_alerts` | Raised alerts |
+| `flow_variables` | Flow-scoped variables |
+
+## API
+
+Flows are fully manageable over the API. See the [gateway API reference](reference/api) for the full list.
+
+```bash
+GET    /v1/flows                 # list flows
+POST   /v1/flows                 # create a flow
+GET    /v1/flows/{id}            # get a flow
+PUT    /v1/flows/{id}            # update a flow
+DELETE /v1/flows/{id}            # delete a flow
+POST   /v1/flows/{id}/trigger    # trigger manually
+GET    /v1/flows/{id}/executions # execution history
+GET    /v1/flows/metadata        # trigger/condition/action types
+GET    /v1/flows/metric-preview  # preview metric values for conditions
+```
+
+> Flow execution today follows linear step order. Graph execution with branching — topological edge traversal — is the next planned step for the engine.
+
+## Where to go next
+
+- Author flows on the Flows page in [HALO Portal](subsystems/portal).
+- See which metrics are available as triggers in [IO and sensors](subsystems/io-and-sensors).
+- Pull third-party data into flows via [external systems](subsystems/external-systems).
