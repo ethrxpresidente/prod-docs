@@ -1,0 +1,16 @@
+{
+  "label": "DRAGON v1.0.0",
+  "sections": [
+    "index",
+    "getting-started",
+    "concepts/architecture",
+    "subsystems/session-and-capture",
+    "subsystems/sessions-vault-and-import",
+    "subsystems/terminal",
+    "subsystems/copilot-and-rag",
+    "subsystems/redaction-and-audit",
+    "configuration",
+    "security",
+    "licensing"
+  ]
+}

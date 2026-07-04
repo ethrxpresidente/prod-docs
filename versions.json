@@ -1,0 +1,51 @@
+{
+  "generatedAt": "2026-07-03T13:41:57.827Z",
+  "endpoint": "https://updates.ethrx.io/versions.json",
+  "products": {
+    "dragon": {
+      "repo": "ethrxpresidente/dragon",
+      "source": "updates-service",
+      "shipped": "1.0.0",
+      "docsVersion": "v1.0",
+      "docsPresent": "v1.0",
+      "drift": false,
+      "checkedAt": "2026-07-03T13:41:57.827Z"
+    },
+    "halo": {
+      "repo": "ethrxpresidente/halo",
+      "source": "git-tag",
+      "shipped": "v0.2.2",
+      "docsVersion": "v0.2",
+      "docsPresent": "v0.1",
+      "drift": true,
+      "checkedAt": "2026-07-03T13:41:57.827Z"
+    },
+    "chaos": {
+      "repo": "ethrxpresidente/chaos",
+      "source": "manifest",
+      "shipped": "0.1.0",
+      "docsVersion": "v0.1",
+      "docsPresent": "v0.1",
+      "drift": false,
+      "checkedAt": "2026-07-03T13:41:57.827Z"
+    },
+    "raidr": {
+      "repo": "ethrxpresidente/raidr",
+      "source": "manifest",
+      "shipped": "0.1.0",
+      "docsVersion": "v0.1",
+      "docsPresent": "v0.1",
+      "drift": false,
+      "checkedAt": "2026-07-03T13:41:57.827Z"
+    },
+    "foundry": {
+      "repo": "ethrxpresidente/foundry",
+      "source": "pending",
+      "shipped": null,
+      "docsVersion": null,
+      "docsPresent": null,
+      "drift": false,
+      "checkedAt": "2026-07-03T13:41:57.827Z"
+    }
+  }
+}

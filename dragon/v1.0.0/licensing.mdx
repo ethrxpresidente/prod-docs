@@ -1,0 +1,83 @@
+---
+title: Licensing and distribution
+slug: licensing
+product: DRAGON
+version: v1.0.0
+order: 110
+eyebrow: LICENSING
+description: The 14-day trial, offline Ed25519 license activation, what the license gates, signed installers, the two distribution modes, and the update channel.
+---
+
+# Licensing and distribution
+
+DRAGON is a proprietary commercial product, and `v1.0.0` is the release where licensing became real: a `14`-day trial starts on first launch, and a purchased license activates the app permanently, verified entirely on-device. Licensing and distribution share one constraint — both must function fully offline, because a meaningful share of DRAGON's market is air-gapped.
+
+## License
+
+DRAGON is proprietary, copyright ETHRX LLC, all rights reserved, not for redistribution.
+
+## The trial
+
+DRAGON runs on a `14`-day free trial that begins the first time the daemon runs — no account, no registration, no phone-home. The license pill in the top bar always shows the trial status and days remaining, and clicking it opens Settings → License.
+
+When a trial or license lapses, DRAGON blocks the actions that create new work — opening new sessions, asking the copilot, and adding RAG sources — and stops all background AI, including ambient analysis and auto-analyze, along with the network egress and API cost they incur. Existing sessions keep running; nothing is torn down, and the audit log, settings, and license entry remain available. Trial and license transitions are recorded in the audit log as `license_event` entries.
+
+> Trial state lives in the application store and has no clock-rollback protection in v1, by design — the trial is a convenience gate, not an anti-piracy mechanism. There are also deliberately no license bypass flags or environment variables.
+
+## Offline-capable licensing
+
+Licensing functions with zero network access. A license is an Ed25519-signed string — a signed payload carrying the licensee, edition, issue and optional expiry dates, and an optional machine fingerprint — verified locally against the issuer public key baked into the application. The signature check needs no server:
+
+- A license with no expiry is perpetual.
+- A license with an empty machine fingerprint is floating, not node-locked.
+- A node-locked license is bound to a stable machine fingerprint (a hash over OS, hostname, and machine ID — raw identifiers never leave the machine). A fingerprint mismatch still surfaces the parsed licensee and edition, so the UI can direct you to re-activation rather than failing opaquely.
+
+Apply a license in Settings → License — paste the string or use Import file… — or via the license pill in the top bar. Verification happens on-device the moment it is applied.
+
+## Buying and activating
+
+Licenses are sold through the ETHRX online store. Purchase delivers a license key; redeem it at the activation portal (`updates.ethrx.io/activate`), which returns the signed license string to paste into DRAGON. Because the license string itself verifies offline, an air-gapped machine can be activated by generating the string on any connected machine and carrying it across by hand.
+
+Federal, air-gapped-site, and fleet purchasing runs through `access@ethrx.io` rather than the store.
+
+## Installers
+
+Each release produces installers per platform, all of which bundle the Go daemon as a supervised sidecar:
+
+| OS | Installers |
+|---|---|
+| Windows | `.msi` (WiX) and `.exe` (NSIS setup) |
+| macOS | `.dmg` and `.app`, for `aarch64` and `x86_64` |
+| Linux | `.AppImage`, `.deb`, and `.rpm` |
+
+Installers are small — roughly `8` to `11` MB on Windows — because the core is a single static binary, not an Electron bundle. Every release also publishes SBOMs (SPDX and CycloneDX) and a `SHA256SUMS` integrity manifest, and a release gate verifies the artifact set is complete — every platform key and updater bundle present — before anything publishes.
+
+## Two distribution modes
+
+Both postures are first-class and use the same artifacts. Only the delivery differs.
+
+### Connected installs
+
+Standard commercial installs check the update endpoint and self-update through the Tauri updater, verifying each update's detached signature against the public key baked into the application before applying it. The in-app experience is an "Update vX.Y.Z" pill in the header and an Updates window — release notes, a live download progress bar, and Install & Restart. This is the convenience path.
+
+### Air-gapped installs
+
+Disconnected and SCIF customers receive the same signed MSI, NSIS, DMG, AppImage, deb, or rpm bundles, verify them against `SHA256SUMS`, move them by sneakernet, and install and upgrade by hand. These installs never contact the update endpoint. This is the provable-offline path that matches DRAGON's promise that data does not leave the room — the same posture covers offline license activation above.
+
+## Update signing
+
+The updater signing key is separate from OS code signing and is mandatory: a release cannot build without it, and every install verifies updates against the matching public key baked in at build time.
+
+> Because the updater public key is baked into every shipped install, installs only accept updates signed by the matching private key. If that private key were lost, existing installs could never accept another update and would have to be reinstalled from a new build. The private key is backed up securely offline and never committed.
+
+## The update endpoint
+
+The updater is configured against `https://updates.ethrx.io/dragon/{{target}}/{{arch}}/{{current_version}}`, served by the central ETHRX update service. The service is live and end-to-end in `v1.0.0`: it serves the Tauri v2 updater manifest per platform (responding not-modified when the client is current), backs the public downloads manifest, and was validated by shipping real upgrades through it. Air-gapped installs never contact it.
+
+## Code signing status
+
+OS code signing — Windows Authenticode via Azure Trusted Signing and Apple Developer ID with notarization — is wired into the release pipeline and activates when the certificates are configured, with no workflow change. Certificate procurement is in progress; builds produced without them ship unsigned OS bundles and will trip OS trust prompts such as Windows SmartScreen and macOS Gatekeeper. The updater signature check applies in all cases.
+
+## Versioning
+
+DRAGON follows semantic versioning, and `v1.0.0` is the first generally available release. Two formats carry explicit stability contracts: the audit log format, which is a public specification change-controlled with a format version, and the signed license string format, which is the contract between the app and the activation service. Every tagged release has exactly one matching changelog section, published verbatim as the release notes.

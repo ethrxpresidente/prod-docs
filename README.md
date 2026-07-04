@@ -17,7 +17,7 @@ documentation site renders this tree directly.
 
 | product | version | pages |
 |---------|---------|-------|
-| dragon  | v0.1.0  | 9     |
+| dragon  | v1.0.0  | 11    |
 | chaos   | v0.1.0  | 10    |
 | halo    | v0.1.0  | 12    |
 | raidr   | v0.1.0  | 9     |
