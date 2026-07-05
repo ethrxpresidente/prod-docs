@@ -3,6 +3,7 @@
   "sections": [
     "index",
     "getting-started",
+    "llm-integration",
     "concepts/architecture",
     "subsystems/session-and-capture",
     "subsystems/sessions-vault-and-import",

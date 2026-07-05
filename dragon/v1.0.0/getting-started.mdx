@@ -71,7 +71,7 @@ DRAGON runs inference in one of two modes:
 - Embedded — a bundled `llama.cpp` `llama-server` child process over loopback. Point the daemon at a GGUF model file on disk or USB with `-llama-bin` and `-llama-model`; air-gapped operators import the model by sneakernet.
 - Endpoint — any OpenAI-compatible server: LM Studio, Ollama, vLLM, llama-server, or a cloud provider. Set the base URL, model name, embedding model, and API key in Settings → AI.
 
-Both modes hot-swap live — including switching into embedded mode, which relaunches the supervised `llama-server` and atomically swaps the inference client only once the new process is healthy. In `v1.0.0` the Settings page exposes endpoint mode; embedded mode is configured at daemon launch. AI can also be set to `disabled` entirely.
+Both modes hot-swap live — including switching into embedded mode, which relaunches the supervised `llama-server` and atomically swaps the inference client only once the new process is healthy. In `v1.0.0` the Settings page exposes endpoint mode; embedded mode is configured at daemon launch. AI can also be set to `disabled` entirely. For step-by-step provider setup — LM Studio, Ollama, OpenAI, Claude — see [connecting DRAGON to an LLM](llm-integration).
 
 > When the inference endpoint is non-loopback, DRAGON automatically applies strict redaction, which adds a high-entropy token heuristic on top of the structural rules.
 
