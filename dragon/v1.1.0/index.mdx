@@ -1,0 +1,60 @@
+---
+title: DRAGON overview
+slug: index
+product: DRAGON
+version: v1.1.0
+order: 10
+eyebrow: OVERVIEW
+description: DRAGON is an AI-augmented SSH and serial terminal with a local inference, redaction, and audit layer in the session path.
+---
+
+# DRAGON overview
+
+DRAGON is an AI-augmented terminal for network and infrastructure engineers. It speaks SSH and serial console, and it places an intelligence layer directly in the session path: structured capture of device I/O, locally-hosted AI analysis, staged command suggestions, and retrieval-grounded troubleshooting. The name is a backronym — diagnostic retrieval-augmented generation for operational networks.
+
+DRAGON is built for environments where session data cannot leave the room. Inference, embeddings, the vector store, and licensing all function with zero internet access. The product is deployable in SCIFs, on the tactical edge, and across OT and ICS networks.
+
+> DRAGON `v1.1.0` teaches the copilot ordered multi-step config sequences with exact IOS sub-mode awareness, adds editable per-device agent skills and a native Claude client, and ships one-click audit-log export. DRAGON is a licensed product: a `14`-day trial starts on first launch, and a purchased license activates entirely on-device — no account, no phone-home. See [licensing and distribution](licensing).
+
+## What DRAGON does
+
+DRAGON owns every transport. Keystrokes and device output flow through a session broker that tees the byte stream: one copy renders to the terminal synchronously and losslessly, the other feeds a structured capture engine. The render path is never blocked by capture, redaction, or inference — the terminal feels native even with AI disabled.
+
+The capture engine segments raw terminal output into structured `(prompt, command, output)` records using device-aware profiles. Those records are the data substrate that makes local AI analysis useful. An inference orchestrator consumes them to surface anomalies, answer questions, and stage next-command suggestions.
+
+Suggested commands are never auto-executed. Acceptance places a command in the input line for the operator to send. No setting overrides this. It is a product invariant.
+
+## Who it is for
+
+DRAGON targets three operator profiles:
+
+- Network engineers and NOC operators working Cisco, Juniper, and Arista CLI daily, on serial console regularly, against vendor PDFs and tribal-knowledge runbooks.
+- Federal and defense field engineers in disconnected environments with classification constraints and accountability requirements.
+- Sysadmins and SREs doing SSH-heavy Linux work and incident response who want log and stack-trace explanation inline.
+
+## Core capabilities
+
+- SSH and serial console transports through a single session broker — password, public-key, ssh-agent, and keyboard-interactive authentication, native `~/.ssh/config` alias resolution, TOFU host-key verification, and per-session raw logging.
+- A managed session workspace: a drag-and-drop saved-session tree, SecureCRT-style session and folder properties, quick fuzzy session search, one-click import from PuTTY and SecureCRT, and the Vault — reusable credentials assigned to sessions or inherited from folders.
+- Terminal grid layouts — side-by-side, stacked, or 2×2 tiles, each with its own PTY size and scrollback.
+- Structured capture with declarative device profiles for `cisco-ios`, `cisco-nxos`, `cisco-asa`, `cisco-ftd`, `cisco-ise`, `juniper-junos`, `linux-generic`, and a `generic-fallback` — including exact configuration sub-mode tracking on IOS.
+- Editable agent skills: per-device Markdown platform knowledge injected into the copilot's context, with Cisco seed content built in.
+- Two-stage secret redaction — at RAG ingestion and again at context assembly — before any text reaches a model.
+- Hybrid RAG over user-pointed document corpora, device configs, and auto-ingested session history.
+- Inference anywhere: an embedded `llama.cpp` runtime, any OpenAI-compatible endpoint, or Anthropic's Claude natively — hot-swappable live.
+- A copilot you can reach without leaving the terminal — inline ask, attach-a-selection, ordered multi-step command sequences staged one reviewed step at a time, an optional bounded auto-analyze mode, and ambient anomaly-triggered analysis.
+- An append-only, hash-chained audit log with an in-app transparency pane showing the verbatim post-redaction prompt behind every model call, file-access and network-egress evidence records, and one-click export to JSONL or CSV.
+- On-device licensing: a `14`-day trial from first launch and offline Ed25519 license activation.
+
+## How DRAGON is delivered
+
+DRAGON ships as a desktop application. A thin Tauri v2 shell opens a window, loads the frontend in the OS-native webview, and supervises a Go daemon (`dragond`) as a bundled sidecar. The frontend and daemon communicate over a single loopback WebSocket on `ws://127.0.0.1:7717/ws`, authenticated per launch by a shell-generated connection token. The daemon is a single static binary with device profiles and prompt templates embedded, so it runs self-contained from any working directory.
+
+Installers are produced for Windows, macOS (arm64 and x86_64), and Linux. Connected installs check for updates on launch and upgrade in one click over a signed channel; air-gapped installs use the same signed installers moved by sneakernet. Every release carries SBOMs and a `SHA256SUMS` integrity manifest.
+
+## Where to go next
+
+- Install and run DRAGON in [getting started](getting-started).
+- Understand the topology in [concepts and architecture](concepts/architecture).
+- Read the subsystem references for [session and capture](subsystems/session-and-capture), [sessions, Vault, and import](subsystems/sessions-vault-and-import), [the terminal](subsystems/terminal), [copilot and RAG](subsystems/copilot-and-rag), and [redaction and audit](subsystems/redaction-and-audit).
+- Review the [security and compliance posture](security) and the [licensing and distribution](licensing) model.
