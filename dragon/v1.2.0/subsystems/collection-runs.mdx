@@ -1,0 +1,54 @@
+---
+title: Collection Runs
+slug: subsystems/collection-runs
+product: DRAGON
+version: v1.2.0
+order: 75
+eyebrow: SUBSYSTEMS
+description: Read-only status snapshots — run a set of proven-read-only commands against a device, save a timestamped snapshot, diff runs, and hand the result to the copilot.
+---
+
+# Collection Runs
+
+Collection Runs turn the "get a status" chore into one action: pick a connected device, run an ordered set of read-only commands, and DRAGON captures each command's output into a saved, timestamped snapshot — summarized by the copilot, diffable against a later run, and exportable. Re-run the set next week and see exactly what changed: config drift, version deltas, neighbor and inventory changes.
+
+This is the first feature where the core transmits commands without a human keypress, and it does so under a strict stance: the core may auto-send only commands a classification guard proves read-only. Anything that could change state is skipped, never transmitted, and every auto-sent command is written to the audit log.
+
+## Running a collection
+
+Start a collection from the Collect action on a saved-tree session — the target must be a connected, live session. DRAGON runs the set's commands in order, waiting for the device prompt to return after each one, with a per-command timeout so a mis-detected prompt bounds the step instead of hanging the run. A command whose output matches the profile's error signatures is flagged; by default the run continues past errored steps, which is the right behavior for a status collection.
+
+Progress streams live per command. When the run completes, the snapshot — every command with its captured output, plus any skip, error, or timeout flags — is stored with its timestamps, and the copilot produces a summary.
+
+## Built-in command sets
+
+DRAGON `v1.2.0` ships default read-only sets for the two target platforms:
+
+- Cisco and Juniper network gear — `show version`, `show run`, `show int status`, and the other status commands an engineer runs by hand today.
+- Linux and Unix servers — `uptime`, `df -h`, `free`, `ps`, and similar read-only system status.
+
+Sets are ordered command lists bound to device platforms. In `v1.2.0` the built-in sets are fixed; user-editable sets are a tracked follow-up.
+
+## The read-only gate
+
+The gate is the security crux of this subsystem, because it is the one place DRAGON crosses its "suggest, never execute" line — under the narrow exception that only proven-read-only commands may be auto-sent.
+
+Every command in a set is classified at run time by the same rules-only classifier that tags copilot suggestions — profile rules first, then a conservative built-in ruleset. A command auto-runs only when the result is exactly `read-only`. Anything else — `config-impacting`, `destructive`, or unknown — is skipped with a warning and recorded; it is never transmitted. Unknown commands default to `config-impacting`, so the failure mode is a skipped step, not an executed write.
+
+Network platforms are covered by the built-in `show`/`display` family rules. For Linux, `v1.2.0` adds a conservative read-only allowlist: commands that are read-only regardless of arguments — `uname`, `uptime`, `df`, `free`, `ps`, `dmesg`, `journalctl`, and pure readers such as `cat`, `grep`, `ls`, and `stat` — guarded against shell constructs: a command carrying redirection (`>`, `>>`), a pipe into a writer, or `;`/`&&` chaining is not treated as read-only, so `cat > /etc/x` never rides the `cat` prefix. Ambiguous verbs (`ip`, `systemctl`, `mount`, `find`) are deliberately excluded unless an explicit read-only subcommand rule covers them — a wrong allowlist entry would let a writing command auto-run, so the list is reviewed, not generous.
+
+The executor is the single code path that transmits without a keypress — one choke point to test and audit. Each auto-sent (or skipped) command writes an `auto_exec` audit entry carrying provenance, the command, its classification, and its outcome. See [redaction and audit](subsystems/redaction-and-audit).
+
+## Snapshots and diff
+
+Snapshots are stored in the application database and listed as per-device history, filterable by session and date. The snapshot viewer shows per-command output with per-block copy-to-clipboard, skips and warnings, errors, and the AI summary, with a fullscreen mode for long output.
+
+Select two snapshots of the same set and DRAGON renders a side-by-side diff — the fastest answer to "what changed since last time?". The copilot can explain a diff on demand: the diff text is re-redacted and the model call is audited like any other. Snapshot output passes through the standard capture pipeline, so it is ANSI-stripped, pagination-collapsed, and redacted before it is stored.
+
+Snapshots are exportable through the native save dialog, using the same daemon-side write path as audit export.
+
+## Boundaries
+
+- Collections run against a single device per run; folder fan-out across a device group is a tracked follow-up.
+- The target session must already be connected; a headless open–collect–close against a saved node is a tracked follow-up.
+- Command sets are the built-in defaults; creating and editing your own sets is a tracked follow-up.

@@ -1,0 +1,106 @@
+---
+title: Getting started
+slug: getting-started
+product: DRAGON
+version: v1.2.0
+order: 20
+eyebrow: GET STARTED
+description: Install DRAGON, start the trial, open SSH and serial sessions, import existing sessions, point inference at a model, ask the copilot, and run a collection.
+---
+
+# Getting started
+
+This page covers installing DRAGON, launching it, and running the first sessions. DRAGON is a desktop application: a Tauri v2 shell that supervises the `dragond` daemon as a bundled sidecar and renders the frontend in the OS-native webview.
+
+## Install
+
+Download the installer for your platform and run it. Per-OS bundles are produced for each release:
+
+| OS | Installers |
+|---|---|
+| Windows | `.msi` (WiX) and `.exe` (NSIS setup) |
+| macOS | `.dmg` and `.app`, for both `aarch64` and `x86_64` |
+| Linux | `.AppImage`, `.deb`, and `.rpm` |
+
+The installer bundles the daemon. There is no separate service to install and no terminal window — the shell spawns and supervises `dragond` automatically. Installers are approximately `8` MB for the NSIS setup, against roughly `150` MB for an equivalent Electron application. Each release publishes a `SHA256SUMS` manifest so an installer can be integrity-checked before it crosses an air gap.
+
+> Air-gapped and SCIF installs use these same signed installers, moved by sneakernet. A disconnected install never contacts the update endpoint. See [licensing and distribution](licensing).
+
+### First launch and the trial
+
+DRAGON runs on a `14`-day free trial that begins the first time it launches — no account, no phone-home. The license pill in the top bar always shows trial status and days remaining. A purchased license activates entirely offline: paste the license string in Settings → License. The trial clock is anti-abuse hardened — reinstalling or wiping the data directory does not restart it. See [licensing](licensing) for the details and for what happens when a trial lapses.
+
+On first launch a guided tour spotlights the core surfaces — skippable, and replayable any time from the welcome screen or Settings → About. DRAGON starts in its dark theme; a sun/moon control in the tab bar (or Settings → Appearance) switches to a full light mode, terminal included, and the choice persists.
+
+### Connected updates
+
+Connected installs check for updates on launch. When one is available, an "Update vX.Y.Z" pill appears in the header; clicking it opens the Updates window with the installed version and release notes, and Install & Restart downloads with a live progress bar, verifies the update's detached signature against the public key baked into the application, applies it, and relaunches. The same window is reachable from Settings → Updates & About → Check for updates. Disconnected installs upgrade by installing a newer signed installer by hand.
+
+## Launch
+
+Start DRAGON from your application launcher. On start the daemon resolves its data directory, creates the `logs/`, `audit/`, and `rag/` subdirectories, loads the embedded device profiles and prompt templates, opens its SQLite store and audit log, and binds the loopback WebSocket on `127.0.0.1:7717`. The shell generates a fresh `256`-bit connection token every launch and hands it to both sides, so only the window it spawned can talk to the daemon.
+
+The daemon binds loopback only and is not routable by design. Its `Host` and `Origin` headers are hardened against DNS-rebinding and cross-origin connections, with the per-launch token layered on top.
+
+## Open an SSH session
+
+Create a session against an SSH host with a device profile. Pick the profile that matches the target — `cisco-ios`, `cisco-nxos`, `cisco-asa`, `cisco-ftd`, `cisco-ise`, `juniper-junos`, `linux-generic`, or `generic-fallback` — so structured capture segments output correctly.
+
+All four SSH authentication methods work from the connect dialog: password, public key, ssh-agent, and keyboard-interactive. Picking public key opens the key picker — the keys detected in `~/.ssh`, a Browse… file picker, or paste. Keys chosen by path are read by the daemon at dial time, so key bytes never enter the UI. The dialog also has an SSH alias field: enter a `Host` alias from `~/.ssh/config` and DRAGON resolves its `HostName`, `User`, `Port`, and `IdentityFile` exactly like a native `ssh <alias>`. See [session and capture](subsystems/session-and-capture).
+
+The first connection to an unknown host raises a TOFU host-key prompt carrying the OpenSSH SHA-256 fingerprint. Accept to append the key to `known_hosts`; the daemon trusts it on every later connection. A known host presenting a changed key hard-fails as a possible MITM and is not promptable.
+
+If a live session drops — a flaky link, a console server reset, a suspended VPN — DRAGON reconnects it in the background with backoff instead of leaving a dead tab, keeping the tab, scrollback, and copilot context, with a one-click "retry now". Every automatic re-dial is audit-logged. See [session and capture](subsystems/session-and-capture).
+
+## Open a serial session
+
+Enumerate serial ports to populate the picker. DRAGON lists ports with USB friendly names (FTDI, Prolific, CH340). Open a port with the baud, parity, data-bit, stop-bit, and flow settings the console expects. A BRK control on a connected serial session sends a true line break for console recovery flows such as ROMMON entry and password recovery.
+
+## Build the session tree
+
+Save transport parameters, the device profile, and a credential reference into the saved-session tree of folders and entries. Organize it by drag-and-drop, edit any node through its SecureCRT-style Properties dialog, and reopen a saved session by double-click — or press `Ctrl+Shift+O` and fuzzy-find it by name.
+
+Three shortcuts get an existing workflow into DRAGON quickly:
+
+- Import — the "+ import" action scans PuTTY (Windows registry or a `.reg` export), SecureCRT (`Config/Sessions`), and your `~/.ssh/config` host aliases, and recreates your sessions and folder hierarchy, with a preview of what will land.
+- Vault — define a credential once (username + password or SSH key), then assign it to a session or a whole folder; sessions beneath inherit it and connect without a prompt.
+- Properties — right-click any node to edit name, folder, device profile, credential, and SSH details in one place.
+
+See [sessions, Vault, and import](subsystems/sessions-vault-and-import).
+
+## Configure inference
+
+DRAGON runs inference in one of two modes:
+
+- Embedded — a bundled `llama.cpp` `llama-server` child process over loopback. Point the daemon at a GGUF model file on disk or USB with `-llama-bin` and `-llama-model`; air-gapped operators import the model by sneakernet.
+- Endpoint — any OpenAI-compatible server (LM Studio, Ollama, vLLM, llama-server, cloud providers) or Anthropic's Claude, which DRAGON speaks natively. Pick a provider preset in Settings → AI — the endpoint URL pre-fills and the model pickers populate from live model discovery at the endpoint.
+
+Since `v1.2.0` you can configure several providers at once — say, a local Ollama and a cloud Claude — and switch the active one on the fly; exactly one drives the copilot at a time. Everything hot-swaps live, including switching into embedded mode, which relaunches the supervised `llama-server` and atomically swaps the inference client only once the new process is healthy. AI can also be switched off entirely by deactivating all providers. For step-by-step provider setup — LM Studio, Ollama, OpenAI, Claude — see [connecting DRAGON to an LLM](llm-integration).
+
+> When the inference endpoint is non-loopback, DRAGON automatically applies strict redaction, which adds a high-entropy token heuristic on top of the structural rules.
+
+## Ask the copilot
+
+With a session open and inference configured, ask the copilot a question — from the side panel, or without leaving the terminal: type `//` at the start of a line (or press `Ctrl+;`) to route that line to the copilot instead of the device. Highlight any output and click "✦ Ask about this" to attach the selection to your question. The orchestrator assembles a context window, redacts every piece, calls the model, and returns an answer, showing a live "Thinking…" indicator while the turn is in flight.
+
+Staged next-command suggestions land in the staging strip above the input line, each tagged `read-only`, `config-impacting`, or `destructive`. Accept a suggestion to place it in the input line. You send it. DRAGON never transmits it for you.
+
+A suggestion can also be an ordered multi-step sequence. Steps stage onto the input line one at a time — you review and send each — with click-to-start-anywhere, inline editing before staging, and auto-advance when you type the next step yourself. If the device rejects a step, DRAGON rolls back and a regenerated fix resumes at the failed step.
+
+Optionally, enable auto-analyze in the ask bar or Settings → AI: after you run a suggested command, the copilot automatically reviews the output and continues the thread — bounded to a few consecutive turns and still never running anything itself. See [copilot and RAG](subsystems/copilot-and-rag).
+
+## Run a collection
+
+With a session connected, use the Collect action to run a built-in set of read-only status commands — `show version`, `show int status`, `uptime`, `df -h`, and the like — against the device. DRAGON captures each command's output into a saved, timestamped snapshot and summarizes it with the copilot. Re-run the set later and diff two snapshots side-by-side to see exactly what changed.
+
+Only commands a classification guard proves read-only are auto-sent; anything else is skipped, never transmitted, and every auto-sent command is audit-logged. See [Collection Runs](subsystems/collection-runs).
+
+## Add a RAG corpus
+
+Register a documents or configs source by pointing DRAGON at a directory. The ingestor walks the path (Markdown, TXT, HTML, and PDF for docs), redacts the text, chunks it structurally, embeds it, and stores the vectors. Retrieval is hybrid — vector search fused with BM25 keyword search — and insights cite their sources.
+
+Session history is ingested automatically from completed command records, post-redaction. RAG ingestion is confined to allowed roots; the corpus cannot be pointed at arbitrary host files.
+
+## Review the audit log
+
+Toggle the audit pane from the top bar — it docks beneath the terminal and updates live. Every entry expands to show its provenance and, for model calls, the verbatim post-redaction prompt that was transmitted and every local document retrieved. The Export control writes the complete hash-chained log to a file you choose, as canonical JSONL or CSV. The on-disk log is an append-only, hash-chained JSONL file under `audit/`; the format is a public specification — see [redaction and audit](subsystems/redaction-and-audit).
