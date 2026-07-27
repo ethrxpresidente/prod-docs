@@ -1,0 +1,113 @@
+---
+title: Copilot, inference, and RAG
+slug: subsystems/copilot-and-rag
+product: DRAGON
+version: v1.3.0
+order: 70
+eyebrow: SUBSYSTEMS
+description: The inference orchestrator, embedded and endpoint model modes, inline ask, ambient analysis, auto-analyze, command classification, and hybrid retrieval.
+---
+
+# Copilot, inference, and RAG
+
+The copilot surfaces anomalies, answers questions, and stages next-command suggestions. It is assembled from four subsystems: context assembly builds the prompt, the orchestrator drives inference, the inference client talks to a model, and RAG grounds the answers in retrieved corpus text. Every piece of context passes through redaction before it reaches a model, and every AI path — manual, ambient, and auto-analyze — honors the license gate.
+
+## Inference modes
+
+DRAGON runs inference through one client interface implemented two ways, plus an explicit `disabled` mode that turns AI off entirely.
+
+### Embedded mode
+
+The embedded client supervises a bundled `llama.cpp` `llama-server` as a child process over loopback HTTP (default port `7718`). This is the offline path. The supervisor moves through states — idle, starting, running, backoff, failed, stopped — gates readiness on a health check, and uses bounded exponential backoff with a circuit breaker (base `500` ms, cap `30` s, max `5` attempts, reset after `60` s stable). Logs are ring-buffered. Crash isolation is strict: a model crash never touches live sessions.
+
+Embedded mode needs a `llama-server` binary — the `-llama-bin` flag or one placed next to the daemon — and GGUF model files on disk or USB. Switching to embedded now hot-swaps live: the daemon launches the new supervised `llama-server`, waits up to `90` seconds for it to report healthy, optionally starts a second supervisor for the embedding model, and only then atomically swaps the inference client. A failed launch leaves the prior client running untouched.
+
+> In the `v1.3.0` Settings page, embedded mode is not yet selectable as a provider — it is configured at daemon launch with `-llama-bin` and `-llama-model`, pending a bundled runtime. See [configuration](configuration).
+
+### Endpoint mode
+
+The endpoint client speaks the OpenAI-compatible chat-completions protocol, covering LM Studio, Ollama, vLLM, llama-server, and cloud providers in one interface. The client normalizes the `/v1` path, falls back gracefully when a server rejects the `response_format` parameter, adapts newer OpenAI parameter requirements automatically, and surfaces the real failure reason — wrong key, refused connection, not a chat model — instead of a generic error.
+
+Settings → AI is provider-first, and since `v1.2.0` holds a list: configure several providers at once — each from a preset (LM Studio, Ollama, ChatGPT (OpenAI), Claude (Anthropic)) or a custom endpoint, each with its own endpoint, models, and key — and switch the active one on the fly. Exactly one provider drives the copilot at a time; deactivating all of them turns AI off. The endpoint URL pre-fills from the preset, the model and embedding-model pickers populate from live model discovery at that endpoint, and the key field is hidden for keyless local backends.
+
+An `anthropic.com` endpoint is auto-detected and served by a native Anthropic Messages client — the correct API paths and headers, mandatory token limits, JSON-mode handling, and retry on overload, with no OpenAI-compat shim. Anthropic has no embeddings API, so at a Claude endpoint DRAGON disables the embedder and RAG retrieval runs keyword-only.
+
+Endpoint mode hot-swaps live. Switching the active provider — or changing its endpoint, model, embedding model, or key — reconfigures the client, the embedder, and the redaction strictness without a restart.
+
+## Asking from the terminal
+
+The copilot is reachable without leaving the session:
+
+- Inline ask — type `//` at the start of an empty line to route that line to the copilot instead of the device (a mid-command `/` and the device CLI's `?` help key pass through untouched), or press `Ctrl+;` to toggle ask mode. A persistent docked bar — dimmed in device mode, accented when active — keeps your keystrokes' destination unmistakable. Answers render inline and share one transcript with the side panel. `Ctrl+E` asks "explain the last output" in one keystroke.
+- Attach a selection — highlight any terminal output and a "✦ Ask about this" affordance appears (or press `Ctrl+;` with a selection live). The snippet attaches to your next question as a removable chip, is folded through the same redaction, and is size-capped.
+- Progress — the copilot shows a live "Thinking…" indicator for a manual turn and "Analyzing `<command>`…" for an automatic one, so it is never silently in flight.
+
+## Context assembly
+
+Small local models are viable only with disciplined context construction, so context assembly is a first-class subsystem rather than a prompt string. It turns a request — a rolling structured event window, a profile summary, the current mode, RAG retrieval results, and the user question or trigger — into a rendered system and user prompt pair under a token budget.
+
+Truncation is deterministic. The assembler drops the oldest events first, then the lowest-ranked RAG chunks. The user question, the trigger, the profile, and the mode are never truncated; the assembler reports an over-budget condition rather than mutilating the fixed parts. Oversized event outputs are head-and-tail clipped.
+
+Prompt templates are versioned data files, one system template plus one per task type — `explain-output`, `diagnose`, `suggest-next-command`, and `summarize-session`. Each template carries a mandatory version-and-task header. A context hash over the assembled prompt is recorded on every suggestion and audit entry, and RAG sources receive citation identifiers `S1` through `Sn` in rank order.
+
+The assembler also hands the model the device's mode map — how to enter and leave each mode the profile declares — and reports the exact configuration sub-mode (`config-if`, `config-line`, `config-router`, …) when the profile detects one, so guidance matches where you actually are in the CLI. See [session and capture](subsystems/session-and-capture).
+
+### The collection baseline
+
+Since `v1.3.0`, a session whose device has [Collection Runs](subsystems/collection-runs) history gets a collection-baseline block in its context automatically: one-line summaries of the device's recent runs, deterministic drift versus the previous same-set run, and output excerpts only for commands their set opted into context. The digest is hard-capped in size so a `show run` cannot crowd out the live session, is re-redacted at assembly like every other context piece — the orchestrator never relies on upstream redaction alone — and feeds the context hash, so the response cache correctly misses after each new run. History is keyed to the saved-tree node, so it follows the device across reconnects.
+
+### Agent skills
+
+The copilot's platform knowledge is data, not fine-tuning. A skill is a small Markdown document — syntax conventions, config patterns, troubleshooting playbooks — attached to a device profile and rendered into the system prompt as a device-skills block for sessions using that profile. DRAGON ships built-in seed skills for the five Cisco profiles; built-ins are embedded and read-only (enable, disable, or duplicate to edit), and your own skills are created and edited in Settings → Endpoint Profiles, stored in the application database. Skills are relevance-filtered per question (capped at `5` for broad queries) and size-budgeted (`3000` characters per skill, `8000` total) so they inform the model without crowding out session context. The active skills are recorded on each model call's audit entry.
+
+## The orchestrator
+
+The orchestrator consumes the event bus and runs three pipelines.
+
+- Ambient — anomaly-gated and debounced (default `5` s), collapsing bursts, with at most one in-flight ambient analysis per session. Anomaly-candidate events from capture trigger a diagnose task whose results surface quietly as insights and suggestions. It is controlled by the global quiet toggle, a per-session enable, and the license gate, and is preempted by any on-demand question.
+- On-demand — questions and tasks that preempt ambient by cancelling the in-flight analysis.
+- Auto-analyze — an optional follow-up mode, off by default, toggled in the ask bar or Settings → AI. When an answer stages a suggestion and you run it, the copilot automatically reviews the captured output and continues the thread. It is tightly bounded: at most `3` consecutive automatic turns (any manual ask resets the count), the armed watch expires after `5` minutes, one follow-up runs per session at a time, and disconnects or toggling the setting disarm it. The license is re-checked at fire time, and it analyzes only — it never transmits a command.
+
+Every context piece passes through the redaction hook before model contact. Results are delivered as insights and suggestions, and an audit hook records the model call, redaction, retrieval, insight, and suggestion. Identical re-asks are served from a short-lived response cache keyed on the model and the exact assembled context hash — a cache hit costs zero tokens and is badged as cached in the UI.
+
+Not every insight comes from a model. When a collection re-run detects the device's captured state changed, a rule-based drift insight is raised deterministically — no model call, no license gate, no egress — and delivered through the same insight surface. See [Collection Runs](subsystems/collection-runs).
+
+## Response contract and safety
+
+Model output is parsed against a constrained contract into insights, suggestions, and an answer. The parser tolerantly extracts the first balanced JSON object carrying contract keys, stripping markdown fences and reasoning blocks. It degrades gracefully: unparseable output becomes a plain-text answer flagged degraded, and never fabricates a staged suggestion.
+
+Every suggestion is classified `read-only`, `config-impacting`, or `destructive`. Classification is rules-only — no model inference decides it. Profile rules always win; otherwise built-in rules apply, and the model may only escalate severity, never downgrade it. This is a product-safety invariant.
+
+Accepted suggestions land in the input line for the operator to send. DRAGON never auto-transmits a suggestion, and there is no setting to override that.
+
+### Multi-step sequences
+
+A suggestion may carry an ordered sequence of steps instead of a single command. Every step is classified individually by the same rules-only guard, and the sequence carries the maximum severity across its steps. The suggestion card shows three columns — the full sequence, the current editable command with its stage control, and a collapsible rationale.
+
+Staging is one step at a time: each command is placed on the input line newline-free, you send it, and DRAGON advances. Click any line in the sequence to start from there (skipping steps you have already run by hand), edit the current command in place before staging it, and if you type the next step yourself DRAGON recognizes it, marks the step done, and moves on. Destructive steps re-confirm individually.
+
+Corrections are mode-aware: when the device rejects a staged step — its output matches the profile's error signatures — DRAGON flags the step and rolls the pointer back, and a regenerated fix supersedes the sequence in place and resumes at the failed step instead of restarting from the top.
+
+## Retrieval
+
+RAG grounds answers in user-pointed text. The pipeline is extract, redact, chunk, embed, store, and on query, retrieve.
+
+### Corpora
+
+- `docs` — user-pointed directories of Markdown, TXT, HTML, and PDF, with incremental re-indexing via a hash-and-mtime manifest.
+- `configs` — user-pointed device configuration exports, ingested section-aware.
+- `session-history` — completed command records, auto-ingested post-redaction. This is the "I have seen this error before" capability.
+
+A source can be scoped to a saved-tree folder: attach reference material — the vendor PDFs and runbooks for one site or platform — to the folder that holds those sessions, and retrieval for a session in that folder prefers its folder's knowledge over the global corpus. Scoping keeps a Juniper answer from being grounded in the Cisco binder. The `v1.2.0` release also carried a measured retrieval-accuracy remediation pass that improved answer grounding.
+
+### Pipeline detail
+
+Chunking is structure-aware: heading-aware for Markdown, section-aware for configs, command-and-output for session records, with a roughly `1200`-rune target and `200`-rune overlap. PDF extraction is bounded — a `30` s timeout, a `20` MB cap, a distinct error for scanned image-only PDFs, and panic-to-error conversion. The embedder is OpenAI-compatible over the embeddings endpoint.
+
+Ingestion is memory-bounded end to end: directory walks are capped (`512` MB, `5000` files per source), embeddings are batched and stream-decoded, and session-history auto-ingestion runs through a bounded worker pool with a retention cap — pointing DRAGON at a very large folder degrades predictably instead of exhausting memory.
+
+### Hybrid retrieval
+
+Retrieval fuses vector top-k search with BM25 keyword search (Okapi, k1 `1.2`, b `0.75`) by reciprocal-rank fusion. The vector store is `chromem-go`, pure Go, behind an interface so it can be swapped without touching callers. Retrieval degrades rather than failing: with no embedder or on an embedding failure, it falls back to BM25-only with a warning. Source attributions carry through to the UI, insights cite where they came from, and every retrieval is recorded to the audit log with its full fused hit list.
+
+> The BM25 keyword index is in-memory. It is re-seeded at startup from stores that can enumerate chunks, but the persistent vector store cannot yet, so directory document sources are not fully re-seeded into BM25 across restarts until re-ingest. An on-disk index is a tracked follow-up.

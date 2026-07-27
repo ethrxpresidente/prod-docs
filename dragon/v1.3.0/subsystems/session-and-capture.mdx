@@ -1,0 +1,108 @@
+---
+title: Session broker and structured capture
+slug: subsystems/session-and-capture
+product: DRAGON
+version: v1.3.0
+order: 40
+eyebrow: SUBSYSTEMS
+description: The transport broker for SSH and serial, full SSH authentication and ~/.ssh/config resolution, TOFU host keys, automatic reconnect, and the capture engine.
+---
+
+# Session broker and structured capture
+
+The session broker owns every transport. The capture engine turns the raw byte stream it tees into structured records. Together they are the data substrate that makes local AI analysis useful — without good segmentation, a small model has nothing reliable to reason over.
+
+## Session broker
+
+All transport I/O flows through the broker. A transport interface abstracts SSH and serial behind a common byte-stream and control surface — read, write, close, resize, kind, and describe. The describe method never returns credentials.
+
+### SSH transport
+
+SSH uses `golang.org/x/crypto/ssh`. The dial establishes a PTY and interactive shell, sends `keepalive@openssh.com` every `30` seconds, and bounds the connect and handshake with a context.
+
+All four authentication methods are wired end to end from the connect dialog, offered in auth order public-key, agent, password, keyboard-interactive:
+
+- Password — a one-off entry or a saved keychain reference.
+- Public key — inline pasted PEM, a key referenced by path, or a keychain-resolved credential, with an optional passphrase for encrypted keys. A key referenced by path is read by the daemon at dial time, so key bytes never enter the UI; saved key sessions reconnect by re-reading the file.
+- ssh-agent — via `SSH_AUTH_SOCK`. Unsupported on Windows, where DRAGON surfaces a clear error instead of failing opaquely.
+- Keyboard-interactive — challenges round-trip to the UI as an `auth.prompt`/`auth.answer` exchange with a `120`-second timeout, failing fast when no UI is connected. Answers are never logged or persisted.
+
+### The key picker
+
+Choosing public-key auth opens a picker shared by the connect dialog, the Vault, and the Properties dialog. It offers the keys detected in `~/.ssh`, a native Browse… file picker, or paste. Detection is daemon-side and returns path and metadata only — name, key type, comment, and an encrypted flag — never key material. A pasted PEM travels inline for that connection and cannot be saved on a session; the UI steers persistent keys to the [Vault](subsystems/sessions-vault-and-import).
+
+### ~/.ssh/config aliases
+
+The connect dialog's SSH alias field resolves a `Host` alias exactly like a native `ssh <alias>`: the resolver reads `HostName`, `User`, `Port`, and `IdentityFile`, and loads the identity from disk. It supports `Host` glob patterns (`*`, `?`, and `!` negation), `Include` directives (depth-bounded), `~` and `%h`/`%n`/`%d` token expansion, OpenSSH first-value-wins precedence with `IdentityFile` accumulation, and falls back to the standard `~/.ssh/id_*` keys — `id_ed25519`, `id_ecdsa`, `id_ecdsa_sk`, `id_ed25519_sk`, `id_rsa`, `id_dsa` — when no `IdentityFile` is configured. Explicit host, user, and port fields override the resolved values.
+
+> `Match` blocks are deliberately not evaluated in `v1.3.0`; `Host` blocks cover the saved-alias use case.
+
+### Serial transport
+
+Serial uses `go.bug.st/serial`. It configures baud, parity, data bits, stop bits, and flow control. A BRK control on a connected serial session asserts a true line break on the wire — the signal ROMMON entry and password-recovery flows require — with a default `250` ms duration. Port enumeration lists devices with USB VID and PID and product names, so FTDI, Prolific, and CH340 adapters appear with friendly names. Hot-replug is handled.
+
+### Host-key verification
+
+Host keys use trust-on-first-use against a strict `known_hosts` file. The fingerprint is the OpenSSH SHA-256 form. The policy has three outcomes:
+
+- Unknown host — the broker raises a `hostkey.prompt` to the UI carrying the fingerprint; an accept appends the key to `known_hosts`.
+- Known host, matching key — connect proceeds.
+- Known host, changed key — hard fail as a possible MITM. The unknown-host callback is not consulted.
+
+If no UI is attached to answer a prompt, the dial is rejected. Every verdict — accept, reject, timeout, no-UI — is audit-logged. The prompt has a `60`-second timeout.
+
+### Session lifecycle
+
+The broker manager registers sessions, emits a connected event on open, and emits a disconnected event exactly once on teardown. Multiple sessions run concurrently up to the configured cap.
+
+### Automatic reconnect
+
+A dropped transport no longer tears the session down. On a non-deliberate read error the session enters a `reconnecting` state and re-dials in a bounded backoff loop — exponential from `1` second to a `30`-second cap, giving up after roughly `8` attempts or a `3`-minute window — staying registered throughout, so identity, the capture queue, drop counters, raw-log continuity, and the copilot context are all preserved. The tab shows a reconnecting indicator with a one-click "retry now"; the same manual Reconnect action also recovers a hung-but-not-yet-dropped link. On exhaustion the session closes with the original failure reason, exactly as before.
+
+Two honest caveats. A reconnect is a new shell, not a resumed one — SSH re-handshakes and gets a fresh PTY, serial re-opens the port, so device-side state (working directory, enable mode, an unsaved config context) is gone; DRAGON surfaces a terminal notice and the capture engine re-syncs mode on the next prompt. And because auto-reconnect re-dials a device without an operator keypress, every attempt and outcome is written to the audit log as a `reconnect` entry — a silent re-dial is never invisible.
+
+Opening a session is audit-instrumented: a `net_egress` record is written before every SSH dial, and private-key reads emit `fs_access` records — see [redaction and audit](subsystems/redaction-and-audit).
+
+### Raw logging
+
+Each session writes a rotating raw byte log with a maximum size. The log returns offsets so capture records can point back into the exact raw stream. Raw logging is orthogonal to and independent of capture. The raw log is also the source for scrollback when a webview reattaches to a live session after a page reload.
+
+## Structured capture
+
+The capture engine converts the tee'd raw byte stream into structured `SessionEvent` records. It is the hardest and most valuable subsystem. The renderer always receives raw bytes; capture works on its own ANSI-stripped copy.
+
+### The hot path
+
+The engine's feed method is synchronous, allocation-light, and never blocks. Emission goes through a non-blocking callback onto the event bus. A streaming ANSI stripper survives chunk boundaries and feeds line assembly. The engine correlates the user's typed command with the output that follows it, up to the next prompt.
+
+### Prompt and mode detection
+
+Prompts are detected per device profile against the unterminated tail of the stream, so the engine recognizes a prompt before a newline arrives. Mode tracking is a per-profile state machine — for Cisco, exec to enable to config to subconfig, plus ROMMON. Where a profile provides a sub-mode detail pattern, the engine also extracts the exact configuration sub-context from the prompt — `config-if`, `config-line`, `config-router`, `config-vlan`, and any other `config-*` context on `cisco-ios` — and emits a mode-change event when either the mode or the sub-mode changes. Profiles additionally declare how to enter and leave each mode, which the copilot receives as a mode map so its guidance matches where you actually are in the CLI. Pagination markers such as `--More--` are collapsed so multi-page output forms one coherent record.
+
+### Records and anomalies
+
+Command output is everything between the echoed command and the next prompt. The engine emits a structured record carrying the timestamp, session, device profile, mode and sub-mode, command as typed, ANSI-stripped pagination-collapsed output, and a pointer back into the raw log. Output matching a profile error signature flags the record as errored, which drives the copilot's mode-aware corrections.
+
+Cheap per-line anomaly patterns — syslog severities, `err-disabled`, CRC counters, OOM and panic strings — emit anomaly-candidate events. These gate ambient AI without invoking the model on every line — see [copilot and RAG](subsystems/copilot-and-rag).
+
+### Resource bounds
+
+The engine bounds untrusted device input so a hostile or malfunctioning device cannot exhaust memory:
+
+- Maximum line length `64` KB. An overflow flushes the line and emits a `capture-line-overflow` anomaly.
+- Maximum command output `16` MB. Further lines are discarded with a truncation marker; input is still consumed so the next prompt finalizes the record.
+
+## Device profiles
+
+Device profiles are declarative TOML bundles — prompt regexes, the mode state machine with per-mode enter and exit commands, pagination markers, and error and anomaly patterns. Profiles are data, not code, and are user-extensible. DRAGON `v1.3.0` ships:
+
+- `cisco-ios` — including the sub-mode detail pattern for exact `config-*` context tracking
+- `cisco-nxos`
+- `cisco-asa`
+- `cisco-ftd`
+- `cisco-ise`
+- `juniper-junos`
+- `linux-generic`
+- `generic-fallback`
+
+The five Cisco profiles also carry built-in agent skills — editable Markdown platform knowledge for the copilot; see [copilot and RAG](subsystems/copilot-and-rag). Profiles are embedded in the daemon binary, so the sidecar runs self-contained. Adding a profile is pure data: drop a TOML file alongside the others and register it for the UI picker. The `generic-fallback` profile degrades gracefully to a plain terminal with manual analysis when no specific profile matches. Segmentation accuracy is regression-gated in CI against a transcript-replay fixture corpus scored with a precision-aware F1 at a `98%` target.

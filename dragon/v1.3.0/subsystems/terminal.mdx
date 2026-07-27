@@ -1,0 +1,46 @@
+---
+title: Terminal, layouts, and highlighting
+slug: subsystems/terminal
+product: DRAGON
+version: v1.3.0
+order: 60
+eyebrow: SUBSYSTEMS
+description: The xterm.js terminal surface, grid layouts with per-tile PTY and scrollback, focus behavior, light and dark themes, and built-in keyword highlighting.
+---
+
+# Terminal, layouts, and highlighting
+
+The terminal is xterm.js rendered with WebGL (falling back to DOM rendering where WebGL is unavailable), fed raw bytes by the broker's synchronous render path. Nothing DRAGON does — capture, redaction, inference, highlighting — sits between device output and the screen.
+
+## Grid layouts
+
+Split the terminal pane into tiles from the window icon at the right end of the tab strip, Windows-snap style. Four layouts ship in `v1.3.0`:
+
+- Single — the classic full-pane terminal, rendered exactly as before grids existed.
+- Side by side — two tiles, 1×2.
+- Stacked — two tiles, 2×1.
+- Grid — four tiles, 2×2.
+
+Each tile is a full terminal with its own PTY size and its own scrollback (`5000` lines). Exactly one tile is focused at a time, marked by an accent border. The focused tile drives everything session-scoped: the tab strip, the copilot context, the inline ask bar, and the staging strip all follow it. Clicking a tile — or any keyboard focus landing in it — moves focus.
+
+Opening a session in a split layout fills the first empty tile in reading order rather than hiding as a background tab or evicting the tile you're viewing; the focused tile is only replaced when the grid is already full. Closing the focused tile moves focus to the nearest occupied tile rather than leaving a dead pane. Each tile is wrapped in an error boundary, so a fault in one view degrades to a recoverable in-place notice while the rest of DRAGON keeps running.
+
+## Light and dark themes
+
+DRAGON's dark theme is the default and the brand baseline. A sun/moon control in the tab bar — or Settings → Appearance — switches instantly to a full light mode that keeps the same grayscale-first, accent-colored aesthetic, including the terminal itself: the light terminal darkens the ANSI hues so color-coded device output (`up`/`down`, ok/error) stays legible on a light surface instead of washing out. The choice persists across launches. Theming is applied at the renderer, never by rewriting the byte stream, so captured records are unaffected.
+
+## Keyword highlighting
+
+Keyword highlighting is a single on/off toggle in Settings → Appearance, off by default. Enabled, it applies the built-in error-and-status coloring: syslog severities `0`–`2` (emergency, alert, critical) highlight the whole line in red; `error`, `down`, and `err-disabled` tokens highlight red; `up` and `complete` highlight green.
+
+Highlighting is rendered via xterm decorations, never ANSI injection into the byte stream — the render-path invariant holds, and captured records are unaffected.
+
+> The per-rule custom highlight packs that appeared in `v0.2.2` were removed in `v0.3.0` in favor of this single toggle. Configurable rules may return in a later release.
+
+## In-terminal copilot affordances
+
+Two copilot entry points live directly on the terminal surface — the `//` inline ask bar and the "✦ Ask about this" selection affordance. They are documented with the rest of the copilot in [copilot and RAG](subsystems/copilot-and-rag).
+
+## Scrollback and reattach
+
+Live sessions survive a page reload: when a webview reattaches, scrollback is replayed from the session's raw log, so the terminal picks up where it was. Raw logs rotate at a maximum size per session — see [session and capture](subsystems/session-and-capture).

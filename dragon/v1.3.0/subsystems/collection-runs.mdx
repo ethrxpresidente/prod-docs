@@ -1,0 +1,87 @@
+---
+title: Collection Runs
+slug: subsystems/collection-runs
+product: DRAGON
+version: v1.3.0
+order: 75
+eyebrow: SUBSYSTEMS
+description: Read-only status snapshots — author your own command sets in a guided builder, run them against a device, diff runs, get drift insights, and ground the copilot in collection history.
+---
+
+# Collection Runs
+
+Collection Runs turn the "get a status" chore into one action: pick a connected device, run an ordered set of read-only commands, and DRAGON captures each command's output into a saved, timestamped snapshot — summarized by the copilot, diffable against a later run, and exportable. Re-run the set next week and see exactly what changed: config drift, version deltas, neighbor and inventory changes.
+
+In `v1.3.0` the sets themselves are yours: create, duplicate, edit, and delete your own command sets — hand-typed or drafted by the copilot from a plain-English prompt — in a redesigned workspace with a guided builder and live test-runs. A device's collection history now also feeds the copilot automatically, and drift between runs surfaces as an insight with no model call.
+
+This remains the one feature where the core transmits commands without a human keypress, under a strict stance: the core may auto-send only commands a classification guard proves read-only. Anything that could change state is skipped, never transmitted, and every auto-sent command is written to the audit log.
+
+## The workspace
+
+The Collection workspace is a master–detail layout. The left pane is a searchable, relevance-ranked set list — search by name, by platform (`cisco`, `debian`, …), or by command text — that stays wide until you select something. The right pane switches between running a set, editing one inline, and viewing a snapshot with its diff.
+
+## Command sets
+
+A set is an ordered list of commands bound to one or more device platforms. Three sources coexist:
+
+- Built-in — the vendor-maintained default read-only sets for Cisco and Juniper network gear (`show version`, `show run`, `show int status`, …) and Linux/Unix servers (`uptime`, `df -h`, `free`, `ps`, …). Built-ins stay read-only and cannot be deleted; duplicate one to make it yours.
+- User — sets you created or duplicated, fully editable.
+- Generated — sets the copilot drafted; they stay marked as generated across edits.
+
+Each command in a set carries an optional "include output in copilot context" toggle — the per-command opt-in the snapshot context digest honors, below. Sets are bounded at `100` steps, and every edit propagates to all open windows immediately.
+
+## The Collection builder
+
+New Collection opens a guided workspace to author a set:
+
+- Pick the target platform(s).
+- Hand-type commands, or draft them with AI from a natural-language prompt — "BGP & interface health on Cisco IOS" becomes a proposed command list. A draft always lands in the editor for review; it never runs directly. Drafting is a normal model call: redacted, license-gated, and audited.
+- Every command shows a live read-only/skip badge as you type — the same rules-only classifier that gates the run, evaluated locally with no model involved — so you know before saving which steps will auto-run and which will be skipped.
+- Test-run the draft against a live session to see sample output before you commit it. A test-run goes through the full read-only gate and writes the same per-command audit entries as a real run, but nothing is saved — no snapshot is persisted.
+
+Saving deliberately does not reject non-read-only commands — you may save anything, and the gate applies at run time, where non-read-only steps skip and warn. This keeps the classification decision in one place and current, instead of freezing a stale save-time verdict into the store.
+
+## Running a collection
+
+Start a run from the workspace or the Collect action on a saved-tree session — the target must be a connected, live session. DRAGON runs the set's commands in order, waiting for the device prompt to return after each one, with a per-command timeout so a mis-detected prompt bounds the step instead of hanging the run. A command whose output matches the profile's error signatures is flagged; by default the run continues past errored steps. Progress streams live per command, and the finished snapshot — every command with its captured output, plus skip, error, or timeout flags — is stored with its timestamps and summarized by the copilot.
+
+## The read-only gate
+
+The gate is the security crux of this subsystem, because it is the one place DRAGON crosses its "suggest, never execute" line — under the narrow exception that only proven-read-only commands may be auto-sent.
+
+Every command a set could auto-run — a real run or a builder test-run — is re-classified at run time by the same rules-only classifier that tags copilot suggestions: profile rules first, then a conservative built-in ruleset. A command auto-runs only when the result is exactly `read-only`. Anything else — `config-impacting`, `destructive`, or unknown — is skipped with a warning and recorded; it is never transmitted. Unknown commands default to `config-impacting`, so the failure mode is a skipped step, not an executed write.
+
+Network platforms are covered by the built-in `show`/`display` family rules. For Linux, a conservative read-only allowlist covers commands that are read-only regardless of arguments — `uname`, `uptime`, `df`, `free`, `ps`, `dmesg`, `journalctl`, and pure readers such as `cat`, `grep`, `ls`, and `stat`. Ambiguous verbs (`ip`, `systemctl`, `mount`, `find`) are deliberately excluded unless an explicit read-only subcommand rule covers them — a wrong allowlist entry would let a writing command auto-run, so the list is reviewed, not generous.
+
+`v1.3.0` hardens the gate for the new authoring surfaces, closing the ways a read-only verb could still smuggle a write:
+
+- In-band control characters are refused everywhere. The classifier reads a command's leading token, but the transport sends the whole line — so `show version` followed by a Ctrl-U kill-line and `reload` would classify as read-only yet execute `reload`. Every ingress of user-authored command text rejects commands carrying CR/LF, any other control character, DEL, or a Unicode line separator, and the executor itself — the single point that transmits to a device — refuses a control-bearing line even if it classified read-only.
+- Shell constructs downgrade the classification. A read-only-classified command carrying redirection, chaining, or substitution (`>`, `<`, `;`, `&`, backticks, `$(`) — or a pipe into anything other than a network read-only filter keyword (`include`, `exclude`, `begin`, `section`, `match`, `count`, …) — is not treated as read-only. `show run | include bgp` stays read-only; `show > /etc/passwd` and `ping | tee /etc/x` are skipped.
+
+The executor is the single code path that transmits without a keypress — one choke point to test and audit. Each auto-sent (or skipped) command writes an `auto_exec` audit entry carrying provenance, the command, its classification, and its outcome. See [redaction and audit](subsystems/redaction-and-audit).
+
+## Snapshots and diff
+
+Snapshots are stored in the application database and listed as per-device history, filterable by session and date. The snapshot viewer shows per-command output with per-block copy-to-clipboard, skips and warnings, errors, and the AI summary, with a fullscreen mode for long output.
+
+Select two snapshots of the same set and DRAGON renders a side-by-side diff — the fastest answer to "what changed since last time?". The copilot can explain a diff on demand: the diff text is re-redacted and the model call is audited like any other. Snapshot output passes through the standard capture pipeline, so it is ANSI-stripped, pagination-collapsed, and redacted before it is stored.
+
+Snapshots are exportable through the native save dialog, using the same daemon-side write path as audit export.
+
+## Drift insights
+
+When a re-run of a set shows the device's captured state changed, DRAGON raises a drift insight — which commands changed output, what is new or gone, and any step that went from clean to errored. Detection is deterministic: steps are paired by position and compared for output equality, with no model call — so drift insights carry no license gate, no token cost, and no egress. The insight lands in the copilot panel like any other.
+
+Snapshot history follows the device, not the session: runs from a saved-tree session are keyed to that saved node, so history survives reconnects and new tabs. Runs from an ad-hoc, unsaved session are scoped to that session only and end with it — a documented limitation.
+
+## Collection history in the copilot's context
+
+For a device with collection history, the copilot's answers are grounded in its recent runs automatically. Context assembly injects a compact collection baseline for the session's device: one-line summaries of recent runs, what changed since the previous same-set run, and output excerpts only for commands whose set opted them into context. So "what drifted since last week?" and troubleshooting start from a real captured baseline rather than only the live window.
+
+The opt-in is the privacy boundary: built-in sets never opt output in — they contribute run summaries and drift, never raw output — and a duplicated set exposes a command's output only when you switch that command's toggle on. The digest is hard-capped in size so a `show run` cannot blow the context budget, and it is re-redacted at context assembly like every other context piece. See [copilot and RAG](subsystems/copilot-and-rag).
+
+## Boundaries
+
+- Collections run against a single device per run; folder fan-out across a device group is a tracked follow-up.
+- The target session must already be connected; a headless open–collect–close against a saved node is a tracked follow-up.
+- A stored set's classification outcome can change across DRAGON upgrades as the classifier improves — by design; the audit trail records what actually ran or skipped on each run.

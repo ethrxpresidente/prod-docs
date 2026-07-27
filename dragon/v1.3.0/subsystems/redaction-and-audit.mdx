@@ -1,0 +1,130 @@
+---
+title: Redaction and the audit log
+slug: subsystems/redaction-and-audit
+product: DRAGON
+version: v1.3.0
+order: 80
+eyebrow: SUBSYSTEMS
+description: The two-stage secret redaction pipeline, the append-only hash-chained audit log, the transparency pane, and configurable audit storage.
+---
+
+# Redaction and the audit log
+
+Redaction and the audit log are DRAGON's compliance substrate. Redaction proves secrets are scrubbed before any text reaches a model. The audit log proves what the AI did, in a form anyone can verify with only SHA-256 — and the transparency pane puts that evidence in the product itself, down to the verbatim post-redaction prompt behind every model call.
+
+## Two-stage redaction
+
+Secrets are scrubbed at two independent stages, both wired by the composition root rather than by the redaction engine itself:
+
+1. Ingestion — everything entering a RAG corpus (documents, device configs, session history) is redacted before it is embedded or stored.
+2. Context assembly — everything about to reach a model, embedded or remote, is redacted again immediately before inference.
+
+The two stages are independent, so a secret that somehow survives one is caught by the other before model contact.
+
+### How redaction runs
+
+The engine applies an ordered, init-time-compiled registry in a fixed sequence:
+
+1. Multiline structural rules first — for example SSH private-key PEM blocks.
+2. Line structural rules in registry order, one pass each.
+3. Line heuristics, such as password echo detection.
+4. The loose high-entropy heuristic, only in strict mode and never on an already-redacted line.
+
+Replacement preserves analytic utility: a match becomes `<REDACTED:rule-id>` rather than a blank, so the model still sees the structure of the line. Cisco type 7 secrets are redacted, never decoded.
+
+### Pattern coverage
+
+Structural rules cover the secrets engineers actually paste, including:
+
+- Cisco type 0, 5, 7, 8, and 9 secrets, `enable secret`, and `enable password`.
+- SNMP communities, TACACS+ keys, RADIUS keys, and neighbor and message-digest keys.
+- IKE and ISAKMP pre-shared keys, crypto key strings, NTP authentication keys, and WPA PSKs.
+- SSH private-key blocks and username secrets.
+
+The high-entropy heuristic catches generic tokens and is enabled only in strict mode.
+
+### Strict mode
+
+A stricter ruleset auto-applies when the inference target is a non-loopback endpoint rather than the embedded local model. The daemon determines this with a loopback check on the configured endpoint and tightens redaction accordingly — remote model traffic is held to a higher bar than local.
+
+### Verification as a release gate
+
+A redaction event records the class and rule, never the secret. The redaction test corpus — real-world config patterns paired with expected redactions — is a dedicated, named CI job. A redaction escape is treated as a release blocker, and fixtures are append-only so a fixed escape can never regress.
+
+## The audit log
+
+DRAGON records every AI interaction that matters for accountability in an append-only, hash-chained local log. The chain makes after-the-fact tampering — modification, deletion, reordering, or mid-file truncation — detectable by anyone holding the file. The on-disk format is a public, normative specification; auditors and compliance tooling may build against it directly.
+
+### What is recorded
+
+Every suggestion with its content, classification, step sequence, and context hash; every acceptance and dismissal; every redaction event; every model and endpoint invocation with its verbatim post-redaction prompts; every RAG retrieval with its full fused hit list; session opens; settings changes; and license events. Two record kinds new in `v1.2.0` cover the two places DRAGON now acts without a keypress:
+
+- `auto_exec` — every command the read-only-gated Collection Runs executor auto-sent or skipped, with its classification and outcome — builder test-runs included. This is the tamper-evident trail for every command transmitted without a human keypress. See [Collection Runs](subsystems/collection-runs).
+- `reconnect` — every automatic transport re-dial, with its attempt and outcome, so a background reconnect is never an invisible network event.
+
+Two provenance evidence record kinds tie actions to the filesystem and the network:
+
+- `fs_access` — file reads and writes that matter, such as SSH private-key reads and RAG ingestion, carrying the operation, path, purpose, byte count, and result. Key material is never recorded.
+- `net_egress` — outbound connections, carrying the transport kind, destination, loopback-or-external locality, operation, byte counts, and result. External egress is always recorded; loopback egress (the embedded model) is recorded at the full-provenance level.
+
+Every entry ties back to the originating user action, connection, and OS account. Payloads are post-redaction by construction — the log never contained secrets, license strings, or connection tokens.
+
+### The transparency pane
+
+The audit log is a first-class view in the product: a dock beneath the terminal, toggled from the top bar, vertically resizable, updating live, newest entries first. A hash-chain status badge shows `chain OK` or `chain BROKEN` continuously. Every entry expands to show exactly what DRAGON read and sent — for a model call, the verbatim post-redaction system and user prompts transmitted to the model, its redaction tags, token estimate, and the sources in context; for a retrieval, every local document retrieved with corpus, URI, score, and excerpt. The pane holds up to `1000` recent entries; everything older stays in the on-disk files and the export.
+
+### Configurable audit storage
+
+Settings → Security & Audit lets an operator pick where and how the log is written:
+
+- Standard — the `audit/` directory under the data dir.
+- Custom — an operator-chosen directory or volume, such as a WORM mount or a classified partition. The path must exist and be absolute.
+- Strict — pins the always-fsync durability guarantee as an explicit mode.
+
+Plus a provenance level: `security-events` (AI activity, RAG, external calls, and key reads — the default) or `full-provenance` (every file and network access, including loopback). Storage settings hot-swap live and fail closed: an unavailable volume is rejected and nothing is persisted to it. Each directory holds a self-contained chain that resumes from its latest entry.
+
+### Container and schema
+
+The log is UTF-8 JSON Lines, one object per line, `\n` terminated, no BOM, no blank lines, written one file per UTC day as `audit-YYYY-MM-DD.jsonl`. The chain runs continuously across day boundaries. Each entry carries:
+
+| Field | Description |
+|---|---|
+| `seq` | Monotonic sequence, starting at `1`, incrementing by exactly `1`. |
+| `ts` | RFC 3339 UTC timestamp with nanosecond precision. |
+| `kind` | One of `suggestion`, `acceptance`, `dismissal`, `redaction`, `model_call`, `insight`, `session_open`, `auto_exec`, `reconnect`, `fs_access`, `net_egress`, `rag_retrieval`, `settings_change`, `license_event`. New kinds may be added; verifiers treat `kind` as opaque for chain verification. |
+| `payload` | The audited object as JSON, post-redaction. |
+| `payload_hash` | Lowercase hex SHA-256 of the exact `payload` bytes. |
+| `prev_hash` | The previous entry's `hash`; empty for genesis. |
+| `hash` | The chain hash of this entry. |
+
+### Hash computation
+
+The chain binds each entry to its predecessor:
+
+```
+payload_hash = hex( SHA-256( payload_bytes ) )
+
+hash = hex( SHA-256( preimage ) )
+
+preimage = seq_decimal || "|" || ts_unixnano_decimal || "|" || kind
+        || "|" || payload_hash || "|" || prev_hash
+```
+
+The separator is a single ASCII pipe. The timestamp enters the preimage as integer Unix nanoseconds, so the chain is independent of RFC 3339 string formatting. The raw payload bytes do not appear in the preimage — they are bound in through `payload_hash`. The format is unchanged from `v0.1.0`; logs written by any DRAGON release verify identically.
+
+### Verification
+
+Given a log file and nothing else, a verifier reads entries in order, rejects non-JSON or gapped `seq`, recomputes each `payload_hash` and `hash`, and checks each `prev_hash` against the prior entry's `hash`. A reference verifier ships with the product as a CLI: it exits non-zero on the first violation, reporting the `seq` and failure class, and prints the terminal hash for checkpointing.
+
+### Honest limits
+
+The chain proves integrity and order, not authorship. An adversary with write access to the machine could regenerate the whole file from scratch. Tail checkpointing — comparing the final `hash` against an externally recorded value to detect truncation from the tail, which a self-contained chain cannot detect — plus OS-level append-only and ACL protections are the mitigations; custom audit storage exists precisely so the log can live on a WORM volume. Signed checkpoints remain a roadmap item alongside the formal threat model.
+
+### Export
+
+The Export control in the audit pane writes the complete, hash-chained log to a file you choose through the native save dialog, in either format:
+
+- JSONL — the canonical form: a byte-exact concatenation of the daily files, independently verifiable by any chain verifier.
+- CSV — one flattened row per entry (`seq`, `ts`, `kind`, `payload`, `payload_hash`, `prev_hash`, `hash`) for spreadsheets and GRC ingestion. Chain verification is defined only over the JSONL form.
+
+The daemon performs the write itself — the webview never touches the filesystem. The destination must be outside DRAGON's own data and audit directories, the file is written atomically, and the reply reports exactly how many entries and bytes were saved; an export that produces no reply within `15` seconds surfaces a clear timeout error rather than spinning. The on-disk daily files remain the canonical record, and verification works on any copy.
