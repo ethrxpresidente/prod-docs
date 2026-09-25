@@ -1,0 +1,278 @@
+---
+title: Connecting DRAGON to an LLM
+slug: llm-integration
+product: DRAGON
+version: v1.4.0
+order: 25
+eyebrow: CONFIGURE
+description: Point DRAGON's copilot at a local or cloud model — LM Studio, Ollama, OpenAI (ChatGPT), Claude, or any OpenAI-compatible endpoint — with the exact settings for each.
+---
+
+# Connecting DRAGON to an LLM
+
+DRAGON's copilot is model-agnostic. It talks to **any OpenAI-compatible
+`/v1/chat/completions` endpoint** — a model running locally on your workstation,
+one on a server in your enclave, or a cloud API — and speaks **Anthropic's
+native Messages API** when pointed at Claude. You choose the model; DRAGON
+handles the prompting, the JSON contract, secret redaction, and the audit trail.
+
+Everything is configured in one place: **Settings → AI → Model & inference**.
+Add a provider from a preset — LM Studio, Ollama, ChatGPT (OpenAI), Claude
+(Anthropic), or Custom endpoint — and the endpoint URL pre-fills; the **Model**
+and **Embed model** pickers then populate from live model discovery at that
+endpoint, and the key field is hidden for local backends that don't need one.
+
+Since `v1.2.0` you can keep **several providers configured at once** — a local
+Ollama for the enclave, a cloud Claude for connected work — and switch the
+active one on the fly. Exactly one provider drives the copilot at a time, each
+remembers its own endpoint, models, and key, and switching hot-swaps live with
+no restart.
+
+> **Air-gapped / classified networks:** run a **local** model (LM Studio or
+> Ollama). Nothing leaves the workstation. Cloud providers (OpenAI, Claude,
+> Perplexity) require outbound internet and send your *redacted* session context
+> off-device — only use them where egress is authorized. See
+> [Security & redaction](#security--redaction).
+
+---
+
+## How the connection works
+
+- DRAGON sends chat requests to `<Endpoint URL>/chat/completions`. The core
+  automatically appends `/v1` if you leave it off, so
+  `http://localhost:1234` and `http://localhost:1234/v1` are equivalent.
+- An endpoint on `anthropic.com` is auto-detected and served by DRAGON's
+  **native Claude client** — Anthropic's `/v1/messages` API with the `x-api-key`
+  header — no OpenAI-compat shim involved.
+- The **API key** (when required) is sent as a `Bearer` token (`x-api-key` for
+  Anthropic), stored in your OS keychain, and never written to disk or shown in
+  the UI.
+- Before any request leaves the process, DRAGON **redacts secrets** from the
+  prompt (passwords, keys, community strings). Remote endpoints get a stricter
+  redaction policy than local ones.
+- The **same endpoint** serves both chat and embeddings. Embeddings power local
+  RAG (indexing your docs/configs). If your provider has no embeddings API
+  (Claude, Perplexity), the copilot still works — vector indexing is unavailable
+  and RAG retrieval degrades to keyword-only search. See
+  [Embeddings & RAG](#embeddings--rag).
+
+### Quick reference
+
+| Provider | Endpoint URL | API key | Example chat model | Embeddings? |
+|---|---|---|---|---|
+| **LM Studio** (local) | `http://localhost:1234` | not required | *(the model you loaded)* | Yes |
+| **Ollama** (local) | `http://localhost:11434` | not required | `qwen2.5:14b` | Yes (`nomic-embed-text`) |
+| **OpenAI / ChatGPT** (cloud) | `https://api.openai.com` | required | `gpt-4o` | Yes (`text-embedding-3-small`) |
+| **Anthropic / Claude** (cloud) | `https://api.anthropic.com` | required | `claude-sonnet-5` | No — RAG falls back to keyword-only |
+| **Perplexity** (cloud) | `https://api.perplexity.ai` | required | `sonar-pro` | No — see the [caveat](#perplexity) |
+
+Pick the matching **Provider** preset for each of these; use **Custom endpoint**
+for anything not listed.
+
+---
+
+## Local models
+
+Local inference is the default recommendation: zero egress, no API bills, works
+offline, and satisfies air-gapped requirements.
+
+### LM Studio
+
+A desktop app with a built-in model catalog and a one-click local server. Best
+"just works" option on Windows/macOS.
+
+**In LM Studio (one-time):**
+
+1. Install LM Studio: [lmstudio.ai](https://lmstudio.ai).
+2. On the **Discover** tab, download an instruct model. Good starting points:
+   `Qwen2.5 14B Instruct` (quality) or `Qwen2.5 7B Instruct` (lighter). A model
+   that reliably emits JSON matters — instruct-tuned models in the 7B–14B range
+   work well.
+3. Go to the **Developer** tab (the `>_` icon) → **Start Server**. It listens on
+   `http://localhost:1234` by default. Confirm your model is loaded (the server
+   panel shows the loaded model's identifier — you'll paste that into DRAGON).
+4. *(Optional, for RAG)* Also download an embedding model such as
+   `nomic-embed-text-v1.5`; LM Studio serves it from the same port.
+- Reference: [LM Studio local-server docs](https://lmstudio.ai/docs/app/api).
+
+**In DRAGON (Settings → AI):**
+
+| Field | Value |
+|---|---|
+| Provider | `LM Studio (local)` |
+| Endpoint URL | `http://localhost:1234` *(pre-filled)* |
+| Model | pick the loaded model from the list, e.g. `qwen2.5-14b-instruct` |
+| Embed model | *(optional)* `text-embedding-nomic-embed-text-v1.5` |
+| API key | *(hidden — not required)* |
+
+Click **Save AI settings**.
+
+### Ollama
+
+A lightweight CLI/daemon. Great on Linux and for servers.
+
+**On the host (one-time):**
+
+1. Install Ollama: [ollama.com/download](https://ollama.com/download).
+2. Pull a chat model:
+   ```bash
+   ollama pull qwen2.5:14b        # or llama3.1:8b, mistral-nemo, etc.
+   ```
+3. *(Optional, for RAG)* pull an embedding model:
+   ```bash
+   ollama pull nomic-embed-text
+   ```
+4. Ollama runs a server on `http://localhost:11434` automatically (or run
+   `ollama serve`). It exposes an OpenAI-compatible API at `/v1`.
+- Reference: [Ollama's OpenAI compatibility](https://github.com/ollama/ollama/blob/main/docs/openai.md).
+
+**In DRAGON (Settings → AI):**
+
+| Field | Value |
+|---|---|
+| Provider | `Ollama (local)` |
+| Endpoint URL | `http://localhost:11434` *(pre-filled)* |
+| Model | pick `qwen2.5:14b` from the list (matches the pulled tag) |
+| Embed model | *(optional)* `nomic-embed-text` |
+| API key | *(hidden — not required)* |
+
+> **Remote Ollama:** if the model runs on another box in your enclave, use its
+> address instead of `localhost`, e.g. `http://10.0.0.20:11434`, and make sure
+> Ollama binds a reachable interface (`OLLAMA_HOST=0.0.0.0 ollama serve`).
+
+---
+
+## Cloud models
+
+Cloud providers give you the strongest models with no local hardware, at the
+cost of egress and per-token billing. **They receive your redacted session
+context** — only use them where that is permitted.
+
+### OpenAI (ChatGPT)
+
+**Get a key (one-time):**
+
+1. Create an account and add billing at [platform.openai.com](https://platform.openai.com).
+2. Generate an API key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
+   Copy it now — it is shown only once.
+3. Pick a model from [the OpenAI model list](https://platform.openai.com/docs/models).
+   `gpt-4o` is a strong default; `gpt-4o-mini` is cheaper and fast.
+
+**In DRAGON (Settings → AI):**
+
+| Field | Value |
+|---|---|
+| Provider | `ChatGPT (OpenAI)` |
+| Endpoint URL | `https://api.openai.com` *(pre-filled)* |
+| Model | `gpt-4o` |
+| Embed model | *(optional)* `text-embedding-3-small` |
+| API key | your `sk-...` key |
+
+### Anthropic (Claude)
+
+DRAGON ships a **native Claude client**: pick the Claude (Anthropic) provider
+preset and DRAGON speaks Anthropic's Messages API directly — the correct paths,
+the `x-api-key` header, token limits, and Anthropic's JSON conventions are
+handled for you, and the model list is fetched live from your account.
+
+**Get a key (one-time):**
+
+1. Create an account at [console.anthropic.com](https://console.anthropic.com) and add credit.
+2. Generate an API key at [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys).
+3. Pick a model from the Model list DRAGON fetches (or see
+   [the Anthropic model list](https://docs.anthropic.com/en/docs/about-claude/models);
+   `claude-sonnet-5` is a strong default).
+
+**In DRAGON (Settings → AI):**
+
+| Field | Value |
+|---|---|
+| Provider | `Claude (Anthropic)` |
+| Endpoint URL | `https://api.anthropic.com` *(pre-filled)* |
+| Model | `claude-sonnet-5` (picked from the fetched list) |
+| Embed model | leave blank — Anthropic has no embeddings API |
+| API key | your Anthropic key |
+
+> **RAG with Claude:** Anthropic doesn't serve embeddings, so vector indexing is
+> unavailable at this endpoint — DRAGON disables the embedder and RAG retrieval
+> degrades to keyword-only search. For full vector RAG, use a local model for
+> both chat and embeddings. See [Embeddings & RAG](#embeddings--rag).
+
+### Perplexity
+
+Perplexity's API is OpenAI-shaped and search-augmented.
+
+1. Get a key at [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api)
+   (requires a Pro/API plan).
+2. Models are listed at [docs.perplexity.ai](https://docs.perplexity.ai/getting-started/models)
+   (e.g. `sonar`, `sonar-pro`).
+
+> **Caveat — not plug-and-play today.** Perplexity serves chat at
+> `https://api.perplexity.ai/chat/completions` **without** a `/v1` segment, but
+> DRAGON currently always appends `/v1`. Until per-provider endpoint handling
+> lands (roadmap), Perplexity won't connect through the standard endpoint field.
+> Prefer OpenAI or Claude for cloud, or a local model.
+
+---
+
+## Embeddings & RAG
+
+Embeddings are only needed if you use **RAG** (Settings → AI → *RAG corpus
+sources*) to index your own docs, device configs, or session history so the
+copilot can cite them.
+
+- **Embed model** must be reachable at the **same Endpoint URL** as your chat
+  model, at `/v1/embeddings`.
+- Local backends (LM Studio, Ollama) serve both from one port — set the Embed
+  model field and add a corpus.
+- Cloud chat providers **without** an embeddings API (Claude, Perplexity) can't
+  compute vector embeddings at their endpoint — RAG retrieval degrades to
+  keyword-only search there. Options: (a) accept keyword-only retrieval — the
+  copilot works fine; or (b) use a local chat model too — running a cloud model
+  for chat with a separate local embedder for RAG is **not** currently
+  splittable (one endpoint field), so for full vector RAG use a local chat
+  model as well.
+- Recommended embed models: `nomic-embed-text` (Ollama),
+  `text-embedding-nomic-embed-text-v1.5` (LM Studio),
+  `text-embedding-3-small` (OpenAI).
+
+Leave the Embed model blank if you're not using RAG.
+
+---
+
+## Security & redaction
+
+- DRAGON scrubs secrets from every prompt **before** it leaves the process, and
+  applies a stricter policy to non-local endpoints. Redactions are recorded in
+  the tamper-evident audit log (the exact post-redaction prompt sent to the
+  model is stored as evidence).
+- The API key lives in the OS keychain, is sent only as a `Bearer` header, and
+  is never echoed to the UI or written to browser storage.
+- **For classified or air-gapped work, use a local model.** Cloud endpoints
+  transmit redacted-but-real session context (commands, device output, your
+  questions) to a third party that may log or retain it. Choose a provider whose
+  data-handling terms match your authorization, and confirm egress is permitted.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| "no inference configured" / copilot silent | Provider is set to Disabled, or the Endpoint URL is blank. |
+| Connection refused (local) | The local server isn't running. Start LM Studio's server / `ollama serve`. Check the port (`1234` vs `11434`). |
+| 401 / 403 (cloud) | Missing or wrong API key, or no billing/credit on the account. Re-enter the key and Save. |
+| 404 on requests | Wrong endpoint path (don't include `/chat/completions` yourself — DRAGON adds it), or a provider that doesn't use `/v1` (see [Perplexity](#perplexity)). |
+| Model replies but insights/suggestions don't render | The model isn't returning valid JSON. Use an instruct-tuned model; very small (under 7B) or base models often can't hold the output contract. |
+| Slow first response (local) | CPU inference warming up, or the model is too large for your RAM/VRAM. Try a smaller quant or model. |
+| RAG source stuck / errors | The Embed model is blank or not served at the endpoint. Set a valid embed model, or the provider has no embeddings API. |
+
+---
+
+## Recommended starting points
+
+- **Air-gapped / DoD workstation:** LM Studio + `Qwen2.5 14B Instruct`
+  (+ `nomic-embed-text-v1.5` if you want RAG). No egress, no keys.
+- **Local server in the enclave:** Ollama + `qwen2.5:14b`, pointed at the
+  server's address.
+- **Cloud, egress permitted:** OpenAI `gpt-4o` or Anthropic `claude-sonnet-5`.

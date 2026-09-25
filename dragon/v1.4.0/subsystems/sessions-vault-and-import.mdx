@@ -1,0 +1,57 @@
+---
+title: Sessions, Vault, and import
+slug: subsystems/sessions-vault-and-import
+product: DRAGON
+version: v1.4.0
+order: 50
+eyebrow: SUBSYSTEMS
+description: The saved-session tree, drag-and-drop organization, session properties, quick search, the Vault credential manager, and PuTTY, SecureCRT, and ~/.ssh/config import.
+---
+
+# Sessions, Vault, and import
+
+DRAGON's session workspace is built to replace SecureCRT and PuTTY as the daily driver: a folder tree of saved sessions organized by drag-and-drop, one Properties dialog for every setting on a node, managed reusable credentials, and a scanner that imports an existing PuTTY or SecureCRT session library — or your `~/.ssh/config` host aliases — in one pass.
+
+## The saved-session tree
+
+The sessions pane is a tree of folders and session entries. Rows show just the session name; the host address appears in a tooltip on hover, and the pane sheds detail gracefully as it narrows so the name stays visible. Double-click connects, the tab is titled by the session's name, and the welcome screen's Recents card lists the sessions you opened most recently for one-click reopening.
+
+A right-click menu (or `Shift+F10` on a focused row) collects the node operations: Connect, Properties…, Assign credential…, New subfolder, Rename, and Delete.
+
+### Drag-and-drop organization
+
+Reorganize the tree like SecureCRT: drag sessions and folders *into* a folder, or *before* and *after* siblings for exact manual ordering. Folders auto-expand while a drag hovers over them, a root drop-zone moves nodes to the top level, and moving a folder into its own subtree is prevented on both the client and the core. Order is persisted as a `position` field and survives restarts.
+
+### Properties
+
+Right-click a tree node and choose Properties to edit everything about it in one dialog: name, folder membership, device profile, assigned Vault credential, and — for SSH sessions — alias, host, port, user, and authentication. Device profiles and credentials both inherit from the parent folder's default, and the dialog shows the inherited value as a hint when a node has none of its own.
+
+### Quick session search
+
+Press `Ctrl+Shift+O` — or click the search box in the header — to fuzzy-find a saved session by name and open it in a tab, VS Code-style. Matching is two-tier: session names first, host and IP as a fallback. The chord is intercepted at the terminal seam, so it never reaches the device.
+
+## The Vault
+
+The Vault ends password sprawl: define a credential once, use it everywhere, rotate it in one place.
+
+A credential is a name plus a username, and either a password or an SSH key (by path or pasted PEM) with an optional passphrase. Secrets are stored in the OS keychain under opaque references and never displayed again — the credential list shows `key`/`pw` badges and a passphrase marker, not values, and edits are write-only.
+
+### Assignment and inheritance
+
+Assign a credential to a session or to a folder — a folder credential covers every session beneath it. The effective credential for a session is the nearest assignment walking up the tree: a session's own credential overrides an inherited folder credential, and a session can revert to inheriting. A folder credential can even supply the login user when the session doesn't set one. Deleting a credential clears its assignments; affected sessions fall back to a prompt on next connect.
+
+Opening a saved session that has no stored secret presents a `Connect — <name>` prompt bound to that session — no transport picker, no save-to-tree — and by default stores the typed password on that session's keychain entry, so the next open connects silently.
+
+A session with an assigned or inherited credential connects without a password prompt. At connect time the precedence is: a one-off secret typed in the dialog, then the effective Vault credential, then a legacy per-session saved secret, then agent or keyboard-interactive auth.
+
+## Import from PuTTY, SecureCRT, and ~/.ssh/config
+
+The "+ import" action scans an existing session library and adds it to the tree:
+
+- PuTTY — read from the Windows registry, or from an exported `.reg` file for portable and non-local installs.
+- SecureCRT — read from its `Config/Sessions` folder, with the folder hierarchy recreated as nested DRAGON folders.
+- `~/.ssh/config` — host aliases become saved sessions, resolved the same way the connect dialog's alias field resolves them.
+
+Default locations are auto-detected, so the common case is zero-click; a native Browse button handles custom and portable installs. The scan produces a preview where you choose which sessions to import and where they land. Non-SSH and hostless entries are shown greyed with a skip reason rather than silently dropped.
+
+Imported sessions carry host, port, and user only — neither tool stores plaintext passwords — so you supply credentials on first connect, or assign a Vault credential to the imported folder and cover them all at once. Since `v1.4.0` an imported session also inherits the device profile of the folder it lands in instead of being stamped with a generic profile, so setting the folder's profile covers every imported device beneath it.

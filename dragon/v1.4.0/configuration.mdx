@@ -1,0 +1,123 @@
+---
+title: Configuration
+slug: configuration
+product: DRAGON
+version: v1.4.0
+order: 90
+eyebrow: CONFIGURE
+description: Daemon launch flags and environment variables, the Settings page, persisted settings and hot-swap semantics, audit storage, and the data directory.
+---
+
+# Configuration
+
+DRAGON is configured two ways: launch flags passed to the daemon at start, and persisted settings updated live — from the full-screen Settings page or over the wire. Flags shadow persisted settings per-field for the duration of a run and never write the store. This page covers both, the data directory, and how the layers combine.
+
+## Daemon launch flags
+
+The shell launches `dragond` for you, but the daemon accepts flags directly when run from a CLI or supervised. Key flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `-addr` | `127.0.0.1:7717` | The loopback bind address. There is no routable bind by design. |
+| `-data` | OS user config dir `/dragon` | The single user-data directory. |
+| `-max-sessions` | `64` | Concurrent live-session cap; each session pins a transport. |
+| `-exit-with-parent` | off | Shut the daemon down when the parent's held stdin pipe breaks. The shell sets this. |
+| `-ai-endpoint` | unset | OpenAI-compatible endpoint base URL for endpoint mode. |
+| `-ai-model` | unset | Chat model name at the endpoint. |
+| `-ai-key` | unset | Endpoint API key. |
+| `-embed-model` | unset | Embedding model name; empty leaves RAG keyword-only. |
+| `-llama-bin` | unset | Path to the `llama-server` binary for embedded inference. A binary next to the daemon is auto-detected. |
+| `-llama-model` | unset | Path to the GGUF model file for embedded inference. |
+| `-llama-port` | `7718` | Loopback port for the supervised `llama-server` child; the embedding supervisor uses the next port up. |
+| `-ws-token` | unset | The per-launch WebSocket connection token. The shell sets it via environment instead. |
+| `-rag-roots` | home and data-dir parent | Allowed roots for RAG ingestion; ingestion is confined to these. |
+| `-profiles` | embedded | Override the embedded device profiles with a directory. |
+| `-prompts` | embedded | Override the embedded prompt templates with a directory. |
+
+Flags shadow persisted settings per-field for the run only — the AI flags shadow the active provider's fields. They never mutate the store, so a flag override is non-destructive and reverts on the next normal launch.
+
+There are deliberately no license flags and no license environment variables — the license gate has no bypass. See [licensing](licensing).
+
+### Environment variables
+
+The AI flags read environment defaults — `DRAGON_AI_ENDPOINT`, `DRAGON_AI_MODEL`, `DRAGON_AI_KEY`, and `DRAGON_EMBED_MODEL` — and `DRAGON_WS_TOKEN` carries the connection token (taking precedence over `-ws-token`, and preferred because the environment does not appear in a process list the way arguments do). The shell generates a fresh token every launch; when none is set, the dev and browser flows work unchanged.
+
+## The Settings page
+
+Settings is a dedicated full-screen page with six sections — sessions keep running underneath it:
+
+- AI — the provider list: several inference providers configured at once, each from a preset (LM Studio, Ollama, ChatGPT, Claude, or a custom endpoint) with its own endpoint, model pickers fed by live model discovery, and API key; one is active at a time and switching is instant. Plus the RAG source list and the quiet-mode and auto-analyze toggles.
+- Endpoint Profiles — the per-device agent-skills editor: enable or disable the built-in Cisco skills, duplicate one to edit, or add your own. See [copilot and RAG](subsystems/copilot-and-rag).
+- Appearance — the light/dark theme choice and the keyword-highlighting toggle.
+- Security & Audit — audit storage mode, provenance level, and the factory reset.
+- License — status, and paste or import a license string.
+- Updates & About — the running version, Check for updates, and the replayable first-run tour.
+
+The full Settings page had a responsive pass in `v1.2.0`, so wide pages — Endpoint Profiles especially — use the available width.
+
+## Persisted settings
+
+Settings are stored as key-value JSON in `dragon.db` and updated live; a settings update is a partial update applied immediately, and every change is audit-logged. The full wire surface:
+
+- `ai.providers` — the list of configured inference backends. Each provider carries an `id`, a display `label`, a `mode` (`endpoint` or `embedded`), its `endpoint` URL, `model`, and `embedModel`; empty `embedModel` leaves retrieval keyword-only for that provider. Per-provider API keys are write-only on the wire: the settings response reports only whether a key is present, never the key. Keys are stored in the OS keychain, not the database.
+- `ai.activeId` — which provider drives the copilot; empty means AI is off.
+- `ai.autoFollowUp` — the auto-analyze toggle, default off. Global — independent of the active provider.
+- `quietMode` — the global ambient-quiet toggle.
+- `audit.mode` — `standard`, `custom`, or `strict` audit storage.
+- `audit.directory` — the absolute path for custom audit storage.
+- `audit.provenanceLevel` — `security-events` or `full-provenance`.
+
+Settings persisted by a pre-`v1.2.0` release — a single endpoint, model, and key — migrate into a one-entry provider list on first load. Agent skills travel over their own wire messages and live in the application database, not in settings. The theme choice is a local UI preference kept by the frontend, not a daemon setting.
+
+### Everything hot-swaps
+
+All settings apply live — switching the active provider, editing a provider, and switching to an embedded-mode provider included. An embedded-mode switch launches the supervised `llama-server`, health-gates it for up to `90` seconds, starts a second supervisor for the embedding model when one is set, and atomically swaps the inference client only once the new process is healthy. On failure the update is rejected, nothing is persisted, and the prior client keeps serving. Embedded mode requires a `llama-server` binary from `-llama-bin` or beside the daemon.
+
+> The `v1.4.0` Settings UI exposes endpoint providers; an embedded-mode provider is driven by launch flags or the wire until a bundled runtime ships.
+
+Audit storage changes are hot-swapped fail-closed: the new sink is opened first and the update is rejected if the volume is unavailable. At boot, a persisted custom volume that has gone missing falls back to standard storage with a warning rather than blocking startup.
+
+## Redaction strictness
+
+Redaction strictness is not a manual setting — it is derived. When the active inference endpoint is non-loopback, the daemon enables strict redaction automatically, adding the high-entropy heuristic on top of the structural rules. Embedded mode is loopback by definition and runs the structural ruleset. See [redaction and the audit log](subsystems/redaction-and-audit).
+
+## Credentials
+
+Credentials are never configured in files. SSH passwords, Vault credentials and passphrases, and AI API keys live exclusively in the OS keychain — the Windows credential store, macOS Keychain, or Linux Secret Service — under the service name `ethrx-dragon`. The store keeps only opaque keychain references.
+
+On a headless Linux host without a Secret Service backend, the keychain probe fails and DRAGON degrades to session-only secrets rather than writing anything to disk.
+
+## RAG roots
+
+RAG ingestion is confined to the allowed roots in `-rag-roots`, default the user home and the data-directory parent. The daemon resolves symlinks and rejects sibling-prefix escapes, so a source path of `/home/userEVIL` does not satisfy a root of `/home/user`. Ingestion is also volume-bounded — `512` MB and `5000` files per directory walk. Point the roots at the directories you intend to index and nothing wider.
+
+## Data directory layout
+
+Everything lives under one directory, created with `0o700` permissions and trivially backed up:
+
+```
+<data dir>/
+  dragon.db                       SQLite store: sessions, records, suggestions, settings,
+                                  saved tree, Vault metadata, agent skills, license and trial state
+  audit/audit-YYYY-MM-DD.jsonl    hash-chained audit log (relocatable via audit storage settings)
+  rag/chromem/                    persistent vector store
+  logs/{session}-{ts}.raw.log     per-session rotating raw byte logs
+  known_hosts                     TOFU SSH host keys, OpenSSH format
+```
+
+Secrets are not in this directory. They live in the OS keychain, referenced from the store by opaque ref only. License and trial state live inside `dragon.db` — there is no separate license file. One licensing-enforcement record deliberately lives outside this directory: the trial anti-abuse marker (`HKCU\Software\ETHRX\DRAGON` on Windows, `~/.ethrx/dragon.trial` elsewhere) — a fingerprint hash and two timestamps, no secrets. See [licensing](licensing).
+
+### Factory reset
+
+Settings → Security & Audit can wipe all DRAGON state in-app on every platform: license, saved sessions, known hosts, Vault credentials and provider keys in the keychain, the RAG index, and the audit log. On Windows, choosing "delete application data" during uninstall removes the data directory too, so a reinstall is genuinely fresh. The trial marker above is the one deliberate survivor of both — it holds no user data and exists so a reset does not restart the trial clock.
+
+## Local shells
+
+Local shells need no configuration. The daemon discovers what is installed — on Windows, `pwsh`, Windows PowerShell, `cmd`, Git Bash, and WSL when a real distribution is present; on macOS and Linux, your login shell plus the entries in `/etc/shells` — and the open dialog and welcome-screen tiles offer exactly that list. A shell starts in your home directory unless the dialog's Start in field says otherwise. There is deliberately no setting to add a custom shell path: shells are selected by discovered ID only, so the daemon's WebSocket surface can never be asked to execute an arbitrary program. See [security](security).
+
+## Device profiles and prompts
+
+Profiles and prompt templates are embedded in the daemon binary, so DRAGON runs self-contained. Override either by pointing `-profiles` or `-prompts` at a directory.
+
+- A device profile is a TOML file: prompt regexes, the mode state machine, pagination markers, and anomaly patterns. Adding one is pure data; register it for the UI picker. `v1.4.0` adds `windows-shell` for PowerShell and cmd local sessions.
+- A prompt template is a versioned data file carrying a mandatory version-and-task header, one system template plus one per task type.
