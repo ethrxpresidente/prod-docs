@@ -18,14 +18,10 @@ The principle is narrow. A local, tool-calling LLM acts as a natural-language in
 
 The LLM parses intent, calls the appropriate RAIDR endpoints, and turns structured JSON into operator-readable narrative. The deterministic Rust engine remains the sole source of every number.
 
-```
-user query ──► local LLM (tool-calling)
-                 - parses intent
-                 - calls /links/analyze, /mesh/route, /relay/plan, ...
-                 - narrates JSON → English
-                       │
-                       ▼
-                 RAIDR Rust engine (deterministic, tested)
+```mermaid
+flowchart TB
+  q["User query"] --> llm["Local LLM · tool-calling<br/>parses intent, narrates JSON → English"]
+  llm -- "calls /links/analyze, /mesh/route, /relay/plan, …" --> eng["RAIDR Rust engine<br/>deterministic, tested"]
 ```
 
 Two rules follow.

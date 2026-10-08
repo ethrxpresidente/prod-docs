@@ -30,10 +30,9 @@ Forward and return paths on a real WAN — particularly LEO and VLEO satellite l
 
 Traffic crosses a transparent Linux bridge. Impairments are programmed on the egress qdisc of each port as a composed stack:
 
-```
-root: tbf       (rate limit + burst)
-   └── netem    (delay / jitter / loss / dup / reorder / corrupt)
-         └── pfifo  (bounded queue)
+```mermaid
+flowchart LR
+  tbf["tbf (root)<br/>rate limit + burst"] --> netem["netem<br/>delay · jitter · loss · dup · reorder · corrupt"] --> pfifo["pfifo<br/>bounded queue"]
 ```
 
 The stack is rooted at the lowest configured layer. When no rate limit is set, `netem` is the root directly — no token-bucket filter is inserted, so a latency-only impairment does not add token-bucket buffering to the path.

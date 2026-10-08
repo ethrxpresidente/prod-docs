@@ -51,11 +51,12 @@ The daemon binds loopback only and is not routable. Because loopback binding alo
 
 The governing invariant: the render path is never blocked by capture, redaction, or inference. The broker's read pump enforces it. Each chunk of device output goes to an optional raw log, then to the renderer sink synchronously and losslessly, then to the capture queue non-blocking and lossy.
 
-```
-device output → Transport.Read (broker readPump)
-   ├─(a) raw log (LogOffset bookkeeping)
-   ├─(b) RendererSink → hub.broadcast("session.data") → all webviews   [SYNC, lossless]
-   └─(c) capture queue → capture.Engine.Feed                           [BOUNDED, LOSSY]
+```mermaid
+flowchart LR
+  dev["Device output"] --> read["Transport.Read<br/>broker readPump"]
+  read -- "a" --> log["Raw log<br/>LogOffset bookkeeping"]
+  read -- "b · sync, lossless" --> sink["RendererSink"] --> hub["hub.broadcast<br/>session.data"] --> web["All webviews"]
+  read -- "c · bounded, lossy" --> q["Capture queue"] --> feed["capture.Engine.Feed"]
 ```
 
 Path (b) never waits on path (c). Under pressure the capture queue drops its oldest chunks and counts the drops; the terminal keeps rendering at native latency. AI failures never take down a live session.
@@ -70,12 +71,13 @@ Delivery is best-effort and non-blocking toward publishers, the same invariant a
 
 The analysis path is asynchronous and best-effort. A command record flows from capture onto the bus, where the store persists it and the RAG ingestor absorbs it post-redaction. Anomaly-candidate events gate ambient analysis. The orchestrator assembles context, redacts every piece, calls the model, parses the response, guards the command classification, and broadcasts insights and suggestions, recording each step to the audit log.
 
-```
-capture.Engine.Feed → segmentation → bus.Publish(SessionEvent)
-   ├─ EventCommand          → store.AppendCommandRecord
-   │                        → ingestor.IngestSessionRecord (redact→chunk→embed)
-   ├─ EventAnomalyCandidate → ai.Orchestrator (gates ambient, debounced)
-   └─ EventConnected/Disconnected → hub.broadcast("session.state")
+```mermaid
+flowchart LR
+  feed["capture.Engine.Feed"] --> seg["Segmentation"] --> bus["bus.Publish<br/>SessionEvent"]
+  bus -- "EventCommand" --> store["store.AppendCommandRecord"]
+  bus -- "EventCommand" --> ingest["ingestor.IngestSessionRecord<br/>redact → chunk → embed"]
+  bus -- "EventAnomalyCandidate" --> orch["ai.Orchestrator<br/>gates ambient, debounced"]
+  bus -- "EventConnected / Disconnected" --> hub["hub.broadcast<br/>session.state"]
 ```
 
 ## Storage model

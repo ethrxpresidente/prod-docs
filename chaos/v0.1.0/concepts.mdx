@@ -16,25 +16,25 @@ CHAOS is built around a small set of domain types shared across the API, the CLI
 
 A single daemon, `chaosd`, owns all state. It serves the HTTP/JSON API over a Unix domain socket and programs the data plane through the kernel netlink interface.
 
-```
-┌──────────────────────────────────────────────────────┐
-│ Operator                                             │
-│   chaos CLI ──▶ HTTP/1.1 over Unix socket            │
-│   automation ──▶ HTTP/JSON API                       │
-└──────────────────────────────────────────────────────┘
-                        │
-┌──────────────────────────────────────────────────────┐
-│ Appliance                                            │
-│   chaosd                                             │
-│    ├── chaos-api  (axum HTTP surface, OpenAPI)       │
-│    └── chaos-tc   (rtnetlink TcBackend)              │
-│              │                                       │
-│   ┌──────────▼──────────┐                            │
-│   │ Data plane:         │                            │
-│   │  transparent bridge │                            │
-│   │  tbf → netem → pfifo│  per-port egress           │
-│   └─────────────────────┘                            │
-└──────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph operator["Operator"]
+    direction LR
+    cli["chaos CLI"]
+    auto["Automation"]
+  end
+  subgraph appliance["Appliance · chaosd"]
+    api["chaos-api<br/>axum HTTP surface, OpenAPI"]
+    tc["chaos-tc<br/>rtnetlink TcBackend"]
+    subgraph dp["Data plane · transparent bridge, per-port egress"]
+      direction LR
+      tbf["tbf"] --> netem["netem"] --> pfifo["pfifo"]
+    end
+  end
+  cli -- "HTTP/1.1 over Unix socket" --> api
+  auto -- "HTTP/JSON API" --> api
+  api --> tc
+  tc --> dp
 ```
 
 The API router is generic over the backend (`Arc<B: TcBackend>`) and dispatched statically. `chaosd` constructs the real `rtnetlink` backend at startup and serves the API; tests run the same router against an in-memory mock backend.
@@ -63,10 +63,9 @@ An `Impairment` with every field unset is the cleared state. It serializes to `{
 
 The composite maps directly onto a composed egress qdisc stack:
 
-```
-root: tbf       (rate limit + burst)
-   └── netem    (delay / jitter / loss / dup / reorder / corrupt)
-         └── pfifo  (bounded queue)
+```mermaid
+flowchart LR
+  tbf["tbf (root)<br/>rate limit + burst"] --> netem["netem<br/>delay · jitter · loss · dup · reorder · corrupt"] --> pfifo["pfifo<br/>bounded queue"]
 ```
 
 The stack is rooted at the lowest configured layer. If `rate` is set, `tbf` is the root with `netem` as its child. If `rate` is not set, `netem` is the root directly — no synthetic unlimited `tbf` is inserted, so a latency-only impairment never adds token-bucket buffering that would perturb the baseline latency.
